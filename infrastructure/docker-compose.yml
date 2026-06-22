@@ -1,0 +1,27 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    container_name: ql-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: quantum
+      POSTGRES_PASSWORD: quantum123
+      POSTGRES_DB: quantumlabs
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: ql-qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+volumes:
+  postgres_data:
+  qdrant_data:
