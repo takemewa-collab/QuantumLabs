@@ -157,3 +157,71 @@ def get_memories(user_id: str):
             "status": "error",
             "detail": str(e)
         }
+
+@app.get("/setup-vector-db")
+def setup_vector_db():
+    try:
+        qdrant.recreate_collection(
+            collection_name="memories",
+            vectors_config={
+                "size": 384,
+                "distance": "Cosine"
+            }
+        )
+
+        return {"vector_setup": "ok"}
+
+    except Exception as e:
+        return {
+            "vector_setup": "error",
+            "detail": str(e)
+        }
+
+from uuid import uuid4
+from app.embedding import embed_text
+from qdrant_client.models import PointStruct
+
+@app.post("/memories-semantic")
+def create_memory_semantic(memory: MemoryCreate):
+    try:
+        vector = embed_text(memory.content)
+        point_id = str(uuid4())
+
+        db = SessionLocal()
+        db.execute(
+            text("""
+                INSERT INTO memories (user_id, content)
+                VALUES (:user_id, :content)
+            """),
+            {
+                "user_id": memory.user_id,
+                "content": memory.content
+            }
+        )
+        db.commit()
+        db.close()
+
+        qdrant.upsert(
+            collection_name="memories",
+            points=[
+                PointStruct(
+                    id=point_id,
+                    vector=vector,
+                    payload={
+                        "user_id": memory.user_id,
+                        "content": memory.content
+                    }
+                )
+            ]
+        )
+
+        return {
+            "status": "stored_semantic",
+            "vector_size": len(vector)
+        }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "detail": str(e)
+        }
