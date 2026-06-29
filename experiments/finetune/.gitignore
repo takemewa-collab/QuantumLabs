@@ -1,0 +1,5 @@
+# Generated data and training artifacts — do not commit.
+data/*.jsonl
+outputs/
+*.log
+wandb/

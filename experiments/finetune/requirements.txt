@@ -1,0 +1,17 @@
+# Qwen3 multilingual LoRA fine-tuning dependencies.
+# Install on a CUDA GPU machine (Python >= 3.10 recommended).
+#
+# NOTE: bitsandbytes is CUDA-only and will NOT install on macOS / Apple Silicon.
+# It is only needed for --use-4bit (QLoRA). Skip it for plain bf16 LoRA.
+
+# Qwen3 support landed in transformers 4.51.
+transformers>=4.51.0
+peft>=0.14.0
+trl>=0.15.0
+datasets>=3.0.0
+accelerate>=1.2.0
+bitsandbytes>=0.45.0  # CUDA only — comment out on non-CUDA hosts
+
+# Install the matching CUDA build of torch separately, e.g.:
+#   pip install torch --index-url https://download.pytorch.org/whl/cu124
+torch>=2.3.0
