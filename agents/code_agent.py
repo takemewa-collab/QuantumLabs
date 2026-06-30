@@ -5,8 +5,16 @@ import json
 import os
 import shlex
 import subprocess
+import sys
 
 from openai import OpenAI
+
+# code_agent.py agents/ altinda; protocols/ repo kokunde. Repo kokunu sys.path'e ekle.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+from protocols.safety import SafeEditProtocol, TerminalApprover
 
 BASE_URL = "http://localhost:11434/v1"
 API_KEY = "ollama"
@@ -14,6 +22,10 @@ MODEL = "deepseek-coder-v2:16b"
 
 client = OpenAI(base_url=BASE_URL, api_key=API_KEY)
 WORKSPACE = os.path.abspath(os.getcwd())
+
+# Tum guvenlik mantigi (diff, onay, count kontrolu, path kilidi, dosya yazma)
+# burada yasiyor. Tool'lar sadece bu instance'a delege eder.
+_protocol = SafeEditProtocol(approver=TerminalApprover(), root=WORKSPACE)
 
 BLOCKED_COMMANDS = [
     "rm -rf", "rm -fr", "sudo", "mkfs", "shutdown", "reboot",
@@ -114,41 +126,19 @@ def tool_search_code(args):
 
 
 def tool_write_file(args):
-    path = _safe_path(args["path"])
-    content = args.get("content", "")
-    print(f"\n  [!] Agent su dosyaya YAZMAK istiyor: {args['path']}")
-    print(f"  --- yazilacak icerik (ilk 500 karakter) ---\n{content[:500]}")
-    if input("  Onayliyor musun? [e/h]: ").strip().lower() != "e":
-        return "Kullanici yazma islemini reddetti."
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(content)
+    outcome = _protocol.write_file(args["path"], args["content"])
+    if not outcome.applied:
+        return outcome.message
     diff = _auto_git_diff(args["path"])
-    return f"OK: {args['path']} yazildi ({len(content)} karakter).\n\nGIT DIFF:\n{diff}"
+    return f"{outcome.message}\n\nGIT DIFF:\n{diff}"
 
 
 def tool_replace_text(args):
-    path = _safe_path(args["path"])
-    old = args["old"]
-    new = args["new"]
-    if not os.path.exists(path):
-        return f"HATA: dosya bulunamadi: {args['path']}"
-    with open(path, "r", encoding="utf-8") as f:
-        content = f.read()
-    count = content.count(old)
-    if count == 0:
-        return f"HATA: '{old[:50]}...' metni {args['path']} icinde bulunamadi."
-    if count > 1:
-        return (f"HATA: '{old[:50]}...' metni {count} kez geciyor (benzersiz degil). "
-                f"Daha uzun/benzersiz bir parca sec.")
-    print(f"\n  [!] Agent {args['path']} dosyasinda DEGISIKLIK yapmak istiyor:")
-    print(f"  --- ESKI ---\n{old[:300]}")
-    print(f"  --- YENI ---\n{new[:300]}")
-    if input("  Onayliyor musun? [e/h]: ").strip().lower() != "e":
-        return "Kullanici degisikligi reddetti."
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(content.replace(old, new))
+    outcome = _protocol.replace_text(args["path"], args["old"], args["new"])
+    if not outcome.applied:
+        return outcome.message
     diff = _auto_git_diff(args["path"])
-    return f"OK: {args['path']} guncellendi (1 degisiklik).\n\nGIT DIFF:\n{diff}"
+    return f"{outcome.message}\n\nGIT DIFF:\n{diff}"
 
 
 def tool_run_command(args):
