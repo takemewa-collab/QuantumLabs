@@ -42,7 +42,9 @@ Calisma dizinin: {WORKSPACE}
 
 Kullanabilecegin araclar:
 - read_file(path): bir dosyanin icerigini okur.
-- search_code(query): tum repoda bir metin/kod arar (grep gibi). Repoyu
+- search_code(query, file_type?, max_results?, files_only?): repoda kod/metin arar
+  (rg/grep). file_type ile uzantiya gore suz (orn "py"), max_results ile satir
+  sayisini sinirla, files_only=True ile sadece eslesen dosya adlarini al. Repoyu
   anlamanin en hizli yolu budur.
 - write_file(path, content): bir dosyaya bastan icerik yazar (uzerine yazar).
 - replace_text(path, old, new): bir dosyada 'old' metnini 'new' ile degistirir.
@@ -115,17 +117,43 @@ def tool_read_file(args):
 
 def tool_search_code(args):
     query = args["query"]
-    rg = subprocess.run("command -v rg", shell=True, capture_output=True, text=True)
-    cmd = (["rg", "-n", "--no-heading", query, WORKSPACE] if rg.stdout.strip()
-           else ["grep", "-rn", query, WORKSPACE])
+    file_type = args.get("file_type")          # orn "py" -> sadece .py dosyalari
+    max_results = args.get("max_results", 40)   # gosterilecek max satir
+    files_only = args.get("files_only", False)  # True -> sadece eslesen dosya adlari
+
+    has_rg = subprocess.run(
+        "command -v rg", shell=True, capture_output=True, text=True
+    ).stdout.strip()
+    if has_rg:
+        # rg .gitignore'a zaten saygi duyar; uretilen yedek/sanal-env klasorlerini
+        # ayrica disla.
+        cmd = ["rg", "--no-heading",
+               "--glob", "!.quantumlabs/**", "--glob", "!.venv/**"]
+        cmd.append("-l" if files_only else "-n")
+        if file_type:
+            cmd += ["-t", file_type]
+        cmd += [query, WORKSPACE]
+    else:
+        cmd = ["grep", "-rl" if files_only else "-rn"]
+        if file_type:
+            cmd.append(f"--include=*.{file_type}")
+        cmd += [query, WORKSPACE]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
-        out = result.stdout.strip().replace(WORKSPACE + "/", "")
-        if not out:
-            return f"'{query}' icin eslesme bulunamadi."
-        return out[:4000] if len(out) <= 4000 else out[:4000] + "\n... [kirpildi] ..."
     except subprocess.TimeoutExpired:
         return "HATA: arama 20 saniyede bitmedi."
+    out = result.stdout.strip().replace(WORKSPACE + "/", "")
+    if not out:
+        return f"'{query}' icin eslesme bulunamadi."
+    # Karakter degil SATIR bazli sinirla (kelime/yol ortasindan kesme yok).
+    lines = out.split("\n")
+    total = len(lines)
+    if total > max_results:
+        shown = "\n".join(lines[:max_results])
+        return (f"{shown}\n\nToplam {total} eslesme bulundu, ilk {max_results} "
+                f"gosteriliyor. Daraltmak icin daha spesifik bir query ya da "
+                f"file_type kullan.")
+    return out
 
 
 def tool_write_file(args):
