@@ -15,6 +15,7 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 from protocols.safety import SafeEditProtocol, TerminalApprover
+from runtime.session import Session
 
 BASE_URL = "http://localhost:11434/v1"
 API_KEY = "ollama"
@@ -25,7 +26,9 @@ WORKSPACE = os.path.abspath(os.getcwd())
 
 # Tum guvenlik mantigi (diff, onay, count kontrolu, path kilidi, dosya yazma)
 # burada yasiyor. Tool'lar sadece bu instance'a delege eder.
-_protocol = SafeEditProtocol(approver=TerminalApprover(), root=WORKSPACE)
+# Session verince yazma islemleri checkpoint'lenir (snapshot + rollback altyapisi).
+session = Session(WORKSPACE)
+_protocol = SafeEditProtocol(approver=TerminalApprover(), root=WORKSPACE, session=session)
 
 BLOCKED_COMMANDS = [
     "rm -rf", "rm -fr", "sudo", "mkfs", "shutdown", "reboot",

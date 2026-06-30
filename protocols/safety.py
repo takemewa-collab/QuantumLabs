@@ -19,6 +19,7 @@ Python 3.9 uyumlu.
 from __future__ import annotations
 
 import difflib
+import os
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -177,9 +178,33 @@ class SafeEditProtocol:
     ReAct döngüsü temiz bir gözlem alır ve toparlanabilir.
     """
 
-    def __init__(self, approver: Approver, *, root: Optional[str] = None):
+    def __init__(self, approver: Approver, *, root: Optional[str] = None, session=None):
         self.approver = approver
         self.root = Path(root).resolve() if root else None
+        # session verilirse (workspace + session_id ozelligi olan nesne) yazma
+        # islemleri checkpoint'lenir; None ise eski (checkpoint'siz) davranis korunur.
+        self.session = session
+
+    def _session_rel(self, target: Path) -> str:
+        """checkpoint API'si workspace'e goreceli yol bekler.
+
+        _resolve() symlink'leri cozer (Path.resolve), Session.workspace ise sadece
+        abspath'tir; macOS'ta /var -> /private/var gibi farklar relpath'i bozar.
+        Iki tarafi da realpath ile normalize ederek tutarli relatif yol uretiriz.
+        """
+        return os.path.relpath(os.path.realpath(target), os.path.realpath(self.session.workspace))
+
+    def _commit(self, target: Path, content: str, *, tool: str, summary: str) -> None:
+        """Diske yaz. session varsa: snapshot -> atomic_write -> accept."""
+        if self.session is not None:
+            from . import checkpoint
+            rel = self._session_rel(target)
+            ckpt_dir = checkpoint.take_snapshot(self.session, [rel], task=summary, tool=tool)
+            checkpoint.atomic_write(self.session, rel, content)
+            checkpoint.accept(ckpt_dir)
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content)
 
     def _resolve(self, path: str) -> Path:
         p = Path(path)
@@ -202,8 +227,7 @@ class SafeEditProtocol:
         result = self.approver.request(proposal)
         if not result.approved:
             return EditOutcome(False, path, f"REDDEDİLDİ: {result.reason}")
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content)
+        self._commit(target, content, tool="write_file", summary=proposal.summary)
         return EditOutcome(True, path, f"{len(content)} byte yazıldı -> {path}")
 
     def replace_text(self, path: str, old_text: str, new_text: str, *, count: int = 1) -> EditOutcome:
@@ -233,7 +257,7 @@ class SafeEditProtocol:
         result = self.approver.request(proposal)
         if not result.approved:
             return EditOutcome(False, path, f"REDDEDİLDİ: {result.reason}")
-        target.write_text(updated)
+        self._commit(target, updated, tool="replace_text", summary=proposal.summary)
         return EditOutcome(True, path, f"{path} içinde metin değiştirildi ({changed} yer)")
 
 
