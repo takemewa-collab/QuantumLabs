@@ -1,14 +1,13 @@
-"""QuantumLabs — Checkpoint sistemi (v5a): snapshot + rollback.
+"""QuantumLabs — Checkpoint sistemi (v5a-r): snapshot + rollback.
 
-SafeEditProtocol'un temeli. Henuz agent akisina bagli DEGIL; once tek basina
-test edilecek. Yapisal kural:
-  .quantumlabs/checkpoints/<session>_<NNN>/
+Session'a bagli versiyon. ONEMLI: bu modul runtime/session'i IMPORT ETMEZ;
+sadece 'workspace' ve 'session_id' ozelligi olan bir nesne (duck typing) bekler.
+Boylece protocols katmani runtime'a siki bagimli olmaz, test etmesi de kolaydir.
+
+Yapisal kural:
+  .quantumlabs/checkpoints/<session_id>_<NNN>/
       metadata.json
       files/<dosyanin/repo/icindeki/yolu>
-
-<session> : agent basladiginda BIR KEZ alinan zaman damgasi (sabit kalir).
-<NNN>     : o oturumdaki her SafeEdit'in artan sayaci (001, 002, ...).
-            En yuksek numara = en son degisiklik => LIFO geri-alma dogal gelir.
 """
 
 import datetime
@@ -17,11 +16,6 @@ import os
 import shutil
 
 CHECKPOINT_ROOT = ".quantumlabs/checkpoints"
-
-
-def make_session_id():
-    """Oturum basinda BIR KEZ cagrilir. Sabit kalir."""
-    return datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
 
 
 def _next_index(workspace, session_id):
@@ -39,19 +33,22 @@ def _next_index(workspace, session_id):
     return (max(nums) + 1) if nums else 1
 
 
-def take_snapshot(workspace, session_id, changed_files, task="", tool=""):
+def take_snapshot(session, changed_files, task="", tool=""):
     """Dosyalar DEGISMEDEN ONCE cagrilir. Mevcut hallerini yedekler.
 
+    session: workspace ve session_id ozelligi olan nesne (Session).
     changed_files: repo'ya goreceli yollar listesi (orn: ['agents/x.py']).
     Geri donus: checkpoint klasorunun mutlak yolu.
     """
+    workspace = session.workspace
+    session_id = session.session_id
     idx = _next_index(workspace, session_id)
     ckpt_name = f"{session_id}_{idx:03d}"
     ckpt_dir = os.path.join(workspace, CHECKPOINT_ROOT, ckpt_name)
     files_dir = os.path.join(ckpt_dir, "files")
     os.makedirs(files_dir, exist_ok=True)
 
-    existed = {}  # dosya snapshot aninda var miydi? (yeni dosya tespiti icin)
+    existed = {}
     for rel in changed_files:
         src = os.path.join(workspace, rel)
         if os.path.exists(src):
@@ -93,12 +90,13 @@ def accept(ckpt_dir):
     _save_meta(ckpt_dir, meta)
 
 
-def rollback(workspace, ckpt_dir):
+def rollback(session, ckpt_dir):
     """Kullanici reddetti. Dosyalari snapshot'taki haline geri yukler.
 
     - Snapshot aninda VAR olan dosya  -> eski icerigi geri yazilir.
     - Snapshot aninda YOK olan dosya  -> (yeni olusturulmus) SILINIR.
     """
+    workspace = session.workspace
     meta = _load_meta(ckpt_dir)
     files_dir = os.path.join(ckpt_dir, "files")
     for rel in meta["changed_files"]:
@@ -114,10 +112,9 @@ def rollback(workspace, ckpt_dir):
     _save_meta(ckpt_dir, meta)
 
 
-def atomic_write(workspace, rel, content):
-    """Dosyayi atomik yazar: gecici dosyaya yaz + os.replace.
-    Boylece yazma yarida kesilse bile orijinal bozulmaz."""
-    target = os.path.join(workspace, rel)
+def atomic_write(session, rel, content):
+    """Dosyayi atomik yazar: gecici dosyaya yaz + os.replace."""
+    target = os.path.join(session.workspace, rel)
     os.makedirs(os.path.dirname(target) or ".", exist_ok=True)
     tmp = target + ".qltmp"
     with open(tmp, "w", encoding="utf-8") as f:
