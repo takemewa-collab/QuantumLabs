@@ -18,6 +18,7 @@ if _REPO_ROOT not in sys.path:
 from protocols.safety import SafeEditProtocol, TerminalApprover
 from runtime.session import Session
 from tools import load_tools, registry
+from tools.prompt import render_tool_list
 
 BASE_URL = "http://localhost:11434/v1"
 API_KEY = "ollama"
@@ -36,43 +37,6 @@ BLOCKED_COMMANDS = [
     "rm -rf", "rm -fr", "sudo", "mkfs", "shutdown", "reboot",
     ":(){", "chmod -R 777", "> /dev/sda", "dd if=", "--no-preserve-root",
 ]
-
-SYSTEM_PROMPT = f"""Sen bir kod asistani agent'isin. Bir gorevi adim adim,
-araclar kullanarak cozersin.
-
-Calisma dizinin: {WORKSPACE}
-
-Kullanabilecegin araclar:
-- read_file(path): bir dosyanin icerigini okur.
-- search_code(query, file_type?, max_results?, files_only?): repoda kod/metin arar
-  (rg/grep). file_type ile uzantiya gore suz (orn "py"), max_results ile satir
-  sayisini sinirla, files_only=True ile sadece eslesen dosya adlarini al. Repoyu
-  anlamanin en hizli yolu budur.
-- write_file(path, content): bir dosyaya bastan icerik yazar (uzerine yazar).
-- replace_text(path, old, new): bir dosyada 'old' metnini 'new' ile degistirir.
-  Kucuk degisiklikler icin write_file yerine BUNU tercih et.
-- run_command(command): bir kabuk komutu calistirir (git, pytest, python vb.).
-- final(answer): gorev bitince son cevabini verirsin.
-
-NOT: Dosya degistiren araclar (write_file, replace_text) basarili olunca,
-framework OTOMATIK olarak 'git diff' calistirip sonuca ekler. Yani degisikligi
-gormek icin ayrica git diff cagirmana gerek yok; sonucta gelen diff'i incele.
-
-IS AKISI: search_code -> read_file -> (write_file|replace_text) -> [otomatik diff]
-          -> test -> final. Once anla, sonra degistir, sonra dogrula.
-
-ZORUNLU KURALLAR:
-1. Her adimda SADECE tek bir JSON nesnesi dondur, baska HICBIR metin yazma.
-2. JSON formati: {{"thought": "...", "tool": "arac_adi", "args": {{...}}}}
-3. Degisiklikten sonra gelen otomatik diff'i incele; yanlissa duzelt.
-4. Test gerekiyorsa run_command ile calistir; ciktiyi GECTI/KALDI diye degerlendir.
-5. Gorev bitince tool olarak "final" kullan, cevabini "answer"a yaz.
-6. Yollar calisma dizinine gore goreceli olmali (orn: "agents/main.py").
-
-Ornek:
-{{"thought": "Once ilgili kodu bulmaliyim", "tool": "search_code", "args": {{"query": "def main"}}}}
-"""
-
 
 def _safe_path(path):
     """Yolu calisma dizinine kilitler (commonpath; startswith guvenilmez)."""
@@ -109,6 +73,42 @@ def _auto_git_diff(path):
 # run_command) v0.3.0 R2'de tools/*.py'ye tasindi; R3'te dispatch registry'ye
 # baglandi. Bu dosyada sadece paylasilan yardimcilar (_safe_path, _auto_git_diff,
 # WORKSPACE, _protocol, BLOCKED_COMMANDS) kaldi; tool modulleri bunlari import eder.
+
+
+# SYSTEM_PROMPT'un "Kullanabilecegin araclar:" bolumu artik registry'den uretilir.
+# ONEMLI: load_tools() prompt kurulmadan ONCE cagrilmali; yoksa registry bos olur ve
+# tool listesi bos uretilir. (Tool modulleri _safe_path/_auto_git_diff'i import ettigi
+# icin bu cagri o yardimcilar tanimlandiktan SONRA, burada yapilir.)
+load_tools()
+_tool_list = render_tool_list(registry)
+
+SYSTEM_PROMPT = f"""Sen bir kod asistani agent'isin. Bir gorevi adim adim,
+araclar kullanarak cozersin.
+
+Calisma dizinin: {WORKSPACE}
+
+Kullanabilecegin araclar:
+{_tool_list}
+- final(answer): gorev bitince son cevabini verirsin.
+
+NOT: Dosya degistiren araclar (write_file, replace_text) basarili olunca,
+framework OTOMATIK olarak 'git diff' calistirip sonuca ekler. Yani degisikligi
+gormek icin ayrica git diff cagirmana gerek yok; sonucta gelen diff'i incele.
+
+IS AKISI: search_code -> read_file -> (write_file|replace_text) -> [otomatik diff]
+          -> test -> final. Once anla, sonra degistir, sonra dogrula.
+
+ZORUNLU KURALLAR:
+1. Her adimda SADECE tek bir JSON nesnesi dondur, baska HICBIR metin yazma.
+2. JSON formati: {{"thought": "...", "tool": "arac_adi", "args": {{...}}}}
+3. Degisiklikten sonra gelen otomatik diff'i incele; yanlissa duzelt.
+4. Test gerekiyorsa run_command ile calistir; ciktiyi GECTI/KALDI diye degerlendir.
+5. Gorev bitince tool olarak "final" kullan, cevabini "answer"a yaz.
+6. Yollar calisma dizinine gore goreceli olmali (orn: "agents/main.py").
+
+Ornek:
+{{"thought": "Once ilgili kodu bulmaliyim", "tool": "search_code", "args": {{"query": "def main"}}}}
+"""
 
 
 def parse_action(text):
