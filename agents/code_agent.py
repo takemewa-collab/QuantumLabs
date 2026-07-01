@@ -38,32 +38,32 @@ BLOCKED_COMMANDS = [
     ":(){", "chmod -R 777", "> /dev/sda", "dd if=", "--no-preserve-root",
 ]
 
-def _safe_path(path):
-    """Yolu calisma dizinine kilitler (commonpath; startswith guvenilmez)."""
-    full = os.path.abspath(os.path.join(WORKSPACE, path))
-    if os.path.commonpath([WORKSPACE, full]) != WORKSPACE:
+def _safe_path(path, cwd):
+    """Yolu verilen calisma dizinine (cwd) kilitler (commonpath; startswith guvenilmez)."""
+    full = os.path.abspath(os.path.join(cwd, path))
+    if os.path.commonpath([cwd, full]) != cwd:
         raise ValueError(f"Guvenlik: calisma dizini disina erisim engellendi: {path}")
     return full
 
 
-def _auto_git_diff(path):
+def _auto_git_diff(path, cwd):
     """Bir dosya degistikten sonra otomatik calisir. Framework garantisi:
-    degisikligi gormek modelin insafina birakilmaz, kodla zorlanir."""
+    degisikligi gormek modelin insafina birakilmaz, kodla zorlanir. cwd: git deposu koku."""
     try:
         status = subprocess.run(
             "git status --short -- " + shlex.quote(path),
-            shell=True, cwd=WORKSPACE, capture_output=True, text=True, timeout=10,
+            shell=True, cwd=cwd, capture_output=True, text=True, timeout=10,
         )
         st = status.stdout.strip()
         if not st:
-            if not os.path.isdir(os.path.join(WORKSPACE, ".git")):
+            if not os.path.isdir(os.path.join(cwd, ".git")):
                 return "(git deposu degil; diff atlandi)"
             return "(degisiklik git tarafindan gorulmedi)"
         if st.startswith("??"):
             return f"(yeni dosya, henuz git'e eklenmemis)\n{st}"
         diff = subprocess.run(
             "git diff -- " + shlex.quote(path),
-            shell=True, cwd=WORKSPACE, capture_output=True, text=True, timeout=10,
+            shell=True, cwd=cwd, capture_output=True, text=True, timeout=10,
         )
         return diff.stdout[:3000] or "(diff bos)"
     except subprocess.TimeoutExpired:
@@ -126,9 +126,20 @@ def ask_model(messages):
     return resp.choices[0].message.content
 
 
-def run_agent(task, max_steps=12):
+def run_agent(task, max_steps=12, approver=None):
     load_tools()  # registry'yi doldur (idempotent; importlib modulleri cache'ler)
-    ctx = SimpleNamespace(cwd=WORKSPACE)  # minimal ToolContext: simdilik sadece cwd
+    approver = approver or TerminalApprover()
+    # ctx artik handler yolunun tum calisma-zamani bagimliliklarini tasir:
+    #   cwd      -> path kilidi (_safe_path) + git diff koku
+    #   approver -> write/replace onayi (import-time global _protocol yerine)
+    #   session  -> checkpoint (snapshot/rollback); yoksa duz yazma
+    #   git_diff -> degisiklik sonrasi otomatik diff (cwd'ye bagli)
+    ctx = SimpleNamespace(
+        cwd=WORKSPACE,
+        approver=approver,
+        session=session,
+        git_diff=lambda path: _auto_git_diff(path, WORKSPACE),
+    )
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": f"Gorev: {task}"},

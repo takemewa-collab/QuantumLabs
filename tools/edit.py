@@ -1,14 +1,27 @@
-"""QuantumLabs — Duzenleme araclari (v0.3.0 R2): write_file, replace_text.
+"""QuantumLabs — Duzenleme araclari (v0.3.1 A1): write_file, replace_text.
 
-Mantik agents/code_agent.py'deki tool_write_file / tool_replace_text'ten AYNEN
-tasindi. Guvenlik/onay/checkpoint tek instance olan _protocol icinde; degisiklik
-sonrasi otomatik git diff icin _auto_git_diff korunur. Ikisi de code_agent'tan
-alinir (davranis degismez).
+Guvenlik/onay/checkpoint hala SafeEditProtocol icinde; A1'de approver + cwd (+ session)
+artik CTX'ten geliyor (import-time global _protocol yerine). Otomatik git diff de
+ctx.git_diff uzerinden. Boylece bir handler'i cagiran, calisma-zamani baglamini
+(hangi workspace, hangi approver) tamamen ctx ile kontrol eder.
 """
 from __future__ import annotations
 
-from agents.code_agent import _auto_git_diff, _protocol
+from protocols.safety import SafeEditProtocol
 from tools.registry import ToolParam, registry
+
+
+def _protocol_for(ctx) -> SafeEditProtocol:
+    """ctx'ten approver + cwd (+ varsa session) ile bir SafeEditProtocol kurar.
+
+    root=ctx.cwd: workspace-disina yazmayi engeller (v0.3.0'daki root=WORKSPACE ile ayni).
+    session: varsa checkpoint (snapshot/atomic_write/accept); yoksa duz yazma.
+    """
+    return SafeEditProtocol(
+        approver=ctx.approver,
+        root=ctx.cwd,
+        session=getattr(ctx, "session", None),
+    )
 
 
 @registry.tool(
@@ -20,10 +33,10 @@ from tools.registry import ToolParam, registry
     ),
 )
 def write_file(args: dict, ctx) -> str:
-    outcome = _protocol.write_file(args["path"], args["content"])
+    outcome = _protocol_for(ctx).write_file(args["path"], args["content"])
     if not outcome.applied:
         return outcome.message
-    diff = _auto_git_diff(args["path"])
+    diff = ctx.git_diff(args["path"])
     return f"{outcome.message}\n\nGIT DIFF:\n{diff}"
 
 
@@ -38,8 +51,8 @@ def write_file(args: dict, ctx) -> str:
     ),
 )
 def replace_text(args: dict, ctx) -> str:
-    outcome = _protocol.replace_text(args["path"], args["old"], args["new"])
+    outcome = _protocol_for(ctx).replace_text(args["path"], args["old"], args["new"])
     if not outcome.applied:
         return outcome.message
-    diff = _auto_git_diff(args["path"])
+    diff = ctx.git_diff(args["path"])
     return f"{outcome.message}\n\nGIT DIFF:\n{diff}"

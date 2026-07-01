@@ -1,15 +1,16 @@
-"""QuantumLabs — Kabuk/okuma araclari (v0.3.0 R2): read_file, run_command.
+"""QuantumLabs — Kabuk/okuma araclari (v0.3.1 A1): read_file, run_command.
 
-Mantik agents/code_agent.py'deki tool_read_file / tool_run_command'dan AYNEN
-tasindi. Paylasilan WORKSPACE, BLOCKED_COMMANDS ve _safe_path code_agent'tan
-alinir (davranis degismez).
+Ikisi de calisma dizinini artik ctx.cwd'den alir (modul-global WORKSPACE yerine).
+run_command onayi DEGISMEDI: inline input() oldugu gibi. Genel/komut onayini
+Approver'a baglamak icin proposal modelinin genisletilmesi gerekiyor -> CommandProposal
+ile ayri adimda (A1 disi).
 """
 from __future__ import annotations
 
 import os
 import subprocess
 
-from agents.code_agent import BLOCKED_COMMANDS, WORKSPACE, _safe_path
+from agents.code_agent import BLOCKED_COMMANDS, _safe_path
 from tools.registry import ToolParam, registry
 
 
@@ -21,7 +22,7 @@ from tools.registry import ToolParam, registry
     ),
 )
 def read_file(args: dict, ctx) -> str:
-    path = _safe_path(args["path"])
+    path = _safe_path(args["path"], ctx.cwd)
     if not os.path.exists(path):
         return f"HATA: dosya bulunamadi: {args['path']}"
     with open(path, "r", encoding="utf-8", errors="replace") as f:
@@ -44,12 +45,13 @@ def run_command(args: dict, ctx) -> str:
     for bad in BLOCKED_COMMANDS:
         if bad in command:
             return f"HATA: tehlikeli komut engellendi ('{bad}' iceriyor)."
+    # run_command onayı CommandProposal ile ayrı adımda (A1 dışı); simdilik inline input.
     print(f"\n  [!] Agent su komutu calistirmak istiyor:\n      {command}")
     if input("  Onayliyor musun? [e/h]: ").strip().lower() != "e":
         return "Kullanici komut calistirmayi reddetti."
     try:
         result = subprocess.run(
-            command, shell=True, cwd=WORKSPACE,
+            command, shell=True, cwd=ctx.cwd,
             capture_output=True, text=True, timeout=30,
         )
         out = (result.stdout or "") + (result.stderr or "")
