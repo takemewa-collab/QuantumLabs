@@ -11,3 +11,8 @@ members = [
     "services",
     "services/memory-service",
 ]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]        # tool modullerinin agents.* / tools.* import'u icin
+testpaths = ["tests"]
+addopts = "-q"

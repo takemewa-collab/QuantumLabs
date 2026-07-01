@@ -6,6 +6,7 @@ import os
 import shlex
 import subprocess
 import sys
+from functools import lru_cache
 from types import SimpleNamespace
 
 from openai import OpenAI
@@ -24,7 +25,16 @@ BASE_URL = "http://localhost:11434/v1"
 API_KEY = "ollama"
 MODEL = "deepseek-coder-v2:16b"
 
-client = OpenAI(base_url=BASE_URL, api_key=API_KEY)
+@lru_cache(maxsize=1)
+def get_client():
+    """OpenAI/Ollama client'ini ILK cagrida kurar (lazy singleton).
+
+    Import-time'da kurmak, agents.code_agent'i import eden herkes (orn. pytest
+    test collection) icin gereksiz bir yan-etki olurdu. lru_cache tek instance
+    garantiler; davranis import-time kurulumla ayni, sadece ertelenmis."""
+    return OpenAI(base_url=BASE_URL, api_key=API_KEY)
+
+
 WORKSPACE = os.path.abspath(os.getcwd())
 
 # Tum guvenlik mantigi (diff, onay, count kontrolu, path kilidi, dosya yazma)
@@ -120,7 +130,7 @@ def parse_action(text):
 
 
 def ask_model(messages):
-    resp = client.chat.completions.create(
+    resp = get_client().chat.completions.create(
         model=MODEL, messages=messages, temperature=0.2,
     )
     return resp.choices[0].message.content
