@@ -6,6 +6,7 @@ import os
 import shlex
 import subprocess
 import sys
+from types import SimpleNamespace
 
 from openai import OpenAI
 
@@ -16,6 +17,7 @@ if _REPO_ROOT not in sys.path:
 
 from protocols.safety import SafeEditProtocol, TerminalApprover
 from runtime.session import Session
+from tools import load_tools, registry
 
 BASE_URL = "http://localhost:11434/v1"
 API_KEY = "ollama"
@@ -103,101 +105,10 @@ def _auto_git_diff(path):
     except subprocess.TimeoutExpired:
         return "(git diff zaman asimina ugradi)"
 
-
-def tool_read_file(args):
-    path = _safe_path(args["path"])
-    if not os.path.exists(path):
-        return f"HATA: dosya bulunamadi: {args['path']}"
-    with open(path, "r", encoding="utf-8", errors="replace") as f:
-        content = f.read()
-    if len(content) > 6000:
-        content = content[:6000] + "\n... [dosya kirpildi] ..."
-    return content
-
-
-def tool_search_code(args):
-    query = args["query"]
-    file_type = args.get("file_type")          # orn "py" -> sadece .py dosyalari
-    max_results = args.get("max_results", 40)   # gosterilecek max satir
-    files_only = args.get("files_only", False)  # True -> sadece eslesen dosya adlari
-
-    has_rg = subprocess.run(
-        "command -v rg", shell=True, capture_output=True, text=True
-    ).stdout.strip()
-    if has_rg:
-        # rg .gitignore'a zaten saygi duyar; uretilen yedek/sanal-env klasorlerini
-        # ayrica disla.
-        cmd = ["rg", "--no-heading",
-               "--glob", "!.quantumlabs/**", "--glob", "!.venv/**"]
-        cmd.append("-l" if files_only else "-n")
-        if file_type:
-            cmd += ["-t", file_type]
-        cmd += [query, WORKSPACE]
-    else:
-        cmd = ["grep", "-rl" if files_only else "-rn"]
-        if file_type:
-            cmd.append(f"--include=*.{file_type}")
-        cmd += [query, WORKSPACE]
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
-    except subprocess.TimeoutExpired:
-        return "HATA: arama 20 saniyede bitmedi."
-    out = result.stdout.strip().replace(WORKSPACE + "/", "")
-    if not out:
-        return f"'{query}' icin eslesme bulunamadi."
-    # Karakter degil SATIR bazli sinirla (kelime/yol ortasindan kesme yok).
-    lines = out.split("\n")
-    total = len(lines)
-    if total > max_results:
-        shown = "\n".join(lines[:max_results])
-        return (f"{shown}\n\nToplam {total} eslesme bulundu, ilk {max_results} "
-                f"gosteriliyor. Daraltmak icin daha spesifik bir query ya da "
-                f"file_type kullan.")
-    return out
-
-
-def tool_write_file(args):
-    outcome = _protocol.write_file(args["path"], args["content"])
-    if not outcome.applied:
-        return outcome.message
-    diff = _auto_git_diff(args["path"])
-    return f"{outcome.message}\n\nGIT DIFF:\n{diff}"
-
-
-def tool_replace_text(args):
-    outcome = _protocol.replace_text(args["path"], args["old"], args["new"])
-    if not outcome.applied:
-        return outcome.message
-    diff = _auto_git_diff(args["path"])
-    return f"{outcome.message}\n\nGIT DIFF:\n{diff}"
-
-
-def tool_run_command(args):
-    command = args["command"]
-    for bad in BLOCKED_COMMANDS:
-        if bad in command:
-            return f"HATA: tehlikeli komut engellendi ('{bad}' iceriyor)."
-    print(f"\n  [!] Agent su komutu calistirmak istiyor:\n      {command}")
-    if input("  Onayliyor musun? [e/h]: ").strip().lower() != "e":
-        return "Kullanici komut calistirmayi reddetti."
-    try:
-        result = subprocess.run(
-            command, shell=True, cwd=WORKSPACE,
-            capture_output=True, text=True, timeout=30,
-        )
-        out = (result.stdout or "") + (result.stderr or "")
-        return out.strip()[:4000] or "(komut cikti uretmedi)"
-    except subprocess.TimeoutExpired:
-        return "HATA: komut 30 saniyede bitmedi (zaman asimi)."
-
-
-TOOLS = {
-    "read_file": tool_read_file,
-    "search_code": tool_search_code,
-    "write_file": tool_write_file,
-    "replace_text": tool_replace_text,
-    "run_command": tool_run_command,
-}
+# NOT: Tum tool fonksiyonlari (read_file, search_code, write_file, replace_text,
+# run_command) v0.3.0 R2'de tools/*.py'ye tasindi; R3'te dispatch registry'ye
+# baglandi. Bu dosyada sadece paylasilan yardimcilar (_safe_path, _auto_git_diff,
+# WORKSPACE, _protocol, BLOCKED_COMMANDS) kaldi; tool modulleri bunlari import eder.
 
 
 def parse_action(text):
@@ -216,6 +127,8 @@ def ask_model(messages):
 
 
 def run_agent(task, max_steps=12):
+    load_tools()  # registry'yi doldur (idempotent; importlib modulleri cache'ler)
+    ctx = SimpleNamespace(cwd=WORKSPACE)  # minimal ToolContext: simdilik sadece cwd
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": f"Gorev: {task}"},
@@ -240,13 +153,10 @@ def run_agent(task, max_steps=12):
         if tool == "final":
             print(f"\n>>> SONUC:\n{args.get('answer', '(bos)')}")
             return
-        if tool not in TOOLS:
-            result = f"HATA: '{tool}' diye bir arac yok. Gecerli: {', '.join(TOOLS)}, final."
-        else:
-            try:
-                result = TOOLS[tool](args)
-            except Exception as e:
-                result = f"HATA: arac calisirken hata: {e}"
+        # Registry dispatch: bilinmeyen tool + handler hatalari iceride
+        # ToolObservation'a donusuyor; agent SADECE observation.content gorur.
+        obs = registry.dispatch(tool, args, ctx)
+        result = obs.content
         print(f"  sonuc (ilk 300 krk): {str(result)[:300]}")
         messages.append({"role": "user", "content": f"Aracin sonucu:\n{result}"})
     print("\n>>> Maksimum adim sayisina ulasildi.")

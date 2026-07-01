@@ -97,9 +97,19 @@ class ToolRegistry:
     def all(self) -> tuple[Tool, ...]:
         return tuple(self._tools.values())
 
-    def dispatch(self, name: str, args: Dict[str, Any], ctx: ToolContext) -> Any:
-        # R3'te: kayitli handler'i bulup args + ctx ile calistir.
-        raise NotImplementedError("dispatch R3'te gelir")
+    def dispatch(self, name: str, args: Dict[str, Any], ctx: ToolContext) -> ToolObservation:
+        # Kayitli handler'i bul, yoksa temiz bir ok=False gozlemi don; varsa
+        # ToolRunner ile guvenli calistir (handler patlarsa dongun dusmez).
+        # Lazy import: runner/observation'i modul-yukleme sirasinda degil, cagri
+        # aninda ceker (tools paketi ici import sirasi kirilganligini onler).
+        from tools.observation import ToolObservation
+        from tools.runner import run_tool
+        tool = self._tools.get(name)
+        if tool is None:
+            return ToolObservation(ok=False, tool=name,
+                                   content=f"bilinmeyen tool: {name}",
+                                   error=f"unknown tool: {name}")
+        return run_tool(tool, args, ctx)
 
     def __contains__(self, name: object) -> bool:
         return name in self._tools
