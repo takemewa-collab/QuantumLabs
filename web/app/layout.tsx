@@ -36,12 +36,13 @@ export default function RootLayout({
       <body className="min-h-full">
         <SidebarProvider>
           <AppSidebar />
-          <SidebarInset>
-            <header className="flex h-10 items-center gap-2 border-b px-2">
-              <SidebarTrigger />
-              <span className="text-sm font-medium">QuantumLabs</span>
+          <SidebarInset className="h-svh overflow-hidden bg-background">
+            <header className="flex h-12 shrink-0 items-center px-3">
+              <SidebarTrigger className="text-muted-foreground" />
             </header>
-            {children}
+            <div className="mx-auto flex w-full max-w-[720px] flex-1 flex-col overflow-hidden px-6">
+              {children}
+            </div>
           </SidebarInset>
         </SidebarProvider>
       </body>
