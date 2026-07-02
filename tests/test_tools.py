@@ -31,10 +31,9 @@ def test_replace_text_changes(fake_ctx, tmp_workspace):
     assert (tmp_workspace / "hello.txt").read_text(encoding="utf-8") == "selam\n"
 
 
-def test_run_command_echo(fake_ctx, monkeypatch):
-    # run_command onayi hala inline input(); onu 'e' dondurecek sekilde monkeypatch'liyoruz.
-    # CommandProposal (Approver'a baglama) gelince bu monkeypatch KALKACAK.
-    monkeypatch.setattr("builtins.input", lambda *a, **k: "e")
+def test_run_command_echo(fake_ctx):
+    # v0.5.1-a: run_command artik ctx.approver'a bagli (inline input SOKULDU).
+    # fake_ctx.approver = AutoApprover -> onay otomatik, input monkeypatch GEREKMEZ.
     obs = registry.dispatch("run_command", {"command": "echo TEST_OK"}, fake_ctx)
     assert obs.ok is True
     assert "TEST_OK" in obs.content

@@ -1,9 +1,9 @@
-"""QuantumLabs — Kabuk/okuma araclari (v0.3.1 A1): read_file, run_command.
+"""QuantumLabs — Kabuk/okuma araclari (read_file, run_command).
 
-Ikisi de calisma dizinini artik ctx.cwd'den alir (modul-global WORKSPACE yerine).
-run_command onayi DEGISMEDI: inline input() oldugu gibi. Genel/komut onayini
-Approver'a baglamak icin proposal modelinin genisletilmesi gerekiyor -> CommandProposal
-ile ayri adimda (A1 disi).
+Ikisi de calisma dizinini ctx.cwd'den alir. run_command onayi artik ctx.approver
+uzerinden (v0.5.1-a): inline input() SOKULDU -> terminalde TerminalApprover,
+web'de WebApprover devreye girer; komut CommandProposal ile onaya sunulur.
+BLOCKED_COMMANDS blacklist'i onaya DUSMEZ (once reddedilir).
 """
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ import os
 import subprocess
 
 from agents.code_agent import BLOCKED_COMMANDS, _safe_path
+from protocols.safety import CommandProposal
 from tools.registry import ToolParam, registry
 
 
@@ -42,13 +43,14 @@ def read_file(args: dict, ctx) -> str:
 )
 def run_command(args: dict, ctx) -> str:
     command = args["command"]
+    # 1) Blacklist ONAYA DUSMEZ: tehlikeli komut dogrudan reddedilir.
     for bad in BLOCKED_COMMANDS:
         if bad in command:
             return f"HATA: tehlikeli komut engellendi ('{bad}' iceriyor)."
-    # run_command onayı CommandProposal ile ayrı adımda (A1 dışı); simdilik inline input.
-    print(f"\n  [!] Agent su komutu calistirmak istiyor:\n      {command}")
-    if input("  Onayliyor musun? [e/h]: ").strip().lower() != "e":
-        return "Kullanici komut calistirmayi reddetti."
+    # 2) Onay: ctx.approver (terminal/web) -> CommandProposal.
+    decision = ctx.approver.request(CommandProposal(command=command, cwd=ctx.cwd))
+    if not decision.approved:
+        return f"Kullanici komut calistirmayi reddetti ({decision.reason})."
     try:
         result = subprocess.run(
             command, shell=True, cwd=ctx.cwd,

@@ -55,32 +55,6 @@ def test_get_unknown_404():
     assert client.get("/tasks/yokboyle").status_code == 404
 
 
-def test_deny_all_approver_blocks_write(tmp_path):
-    # sahte model: once write_file dener, sonra final
-    calls = {"n": 0}
-
-    def fake(messages, cfg):
-        calls["n"] += 1
-        if calls["n"] == 1:
-            return '{"tool":"write_file","args":{"path":"x.txt","content":"hi"}}'
-        return FINAL
-
-    import agents.code_agent as ca_
-    # autouse fixture zaten ask_model'i override etti; burada write senaryosuyla degistir
-    import pytest as _p
-    with _p.MonkeyPatch.context() as m:
-        m.setattr(ca_, "ask_model", fake)
-        m.setattr(ca_, "ingest_session", lambda sid, w: 0)
-        body = client.post("/tasks", json={"task": "yaz", "workspace": str(tmp_path)}).json()
-
-    rec = client.get(f"/tasks/{body['task_id']}").json()
-    assert rec["status"] == "done"
-    obs = [e for e in _obs_events(str(tmp_path), body["session_id"]) if e["type"] == "observation"]
-    assert any("web onay akisi" in o["content"] or "reddedil" in o["content"].lower() for o in obs)
-    # DENY -> dosya yazilmadi
-    assert not os.path.exists(os.path.join(str(tmp_path), "x.txt"))
-
-
 def test_stream_ends(tmp_path):
     body = client.post("/tasks", json={"task": "selam", "workspace": str(tmp_path)}).json()
     with client.stream("GET", f"/tasks/{body['task_id']}/stream") as resp:

@@ -7,10 +7,10 @@ TASK KAYDI IN-MEMORY (TASKS dict): surec yeniden baslayinca kaybolur. Kalicilik
 S5 isi. Tek-worker varsayimi (uvicorn --workers 1) — coklu worker'da dict
 paylasilmaz.
 
-run_command UYARISI: shell.py run_command onayi hala inline input(). Arka plan
-thread'inde stdin yok -> EOFError -> tool ok=False doner (deadlock DEGIL, ama
-komut calismaz). Yani run_command S2'ye (web onay akisi) kadar API'de pratikte
-kullanilamaz.
+Onay akisi (v0.5.1-a): default approver artik WebApprover. Yazma/komut onay
+gerektirdiginde task "waiting_approval"a gecer, SSE'de `approval_needed` sinyali
+cikar; POST /approvals/{id}/decision ile karar verilir. Karar gelmezse timeout ->
+DENY (WebApprover). run_command ARTIK API'de kullanilabilir (inline input soktuldu).
 """
 from __future__ import annotations
 
@@ -30,9 +30,11 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 from agents.code_agent import run_agent
-from api.approvers import DenyAllApprover
+from api.approvers import WebApprover, get_pending, list_pending, resolve_approval
 from runtime.session import Session
 from runtime.transcript import _TRANSCRIPT_SUBDIR  # yol deseni icin tek kaynak
+
+APPROVAL_TIMEOUT_SEC = 300   # web onayi bu surede gelmezse -> DENY (asili task yok)
 
 DEFAULT_WORKSPACE = os.path.abspath(os.getcwd())
 
@@ -55,8 +57,9 @@ def _transcript_path(workspace: str, session_id: str) -> str:
 def _run_task(task_id: str, task: str, session, workspace: str, max_steps: int) -> None:
     """Arka planda run_agent'i kosar, TASKS kaydini done/failed'e cevirir."""
     try:
+        approver = WebApprover(task_id, TASKS, timeout_sec=APPROVAL_TIMEOUT_SEC)
         result = run_agent(task, session=session, workspace=workspace,
-                           approver=DenyAllApprover(), max_steps=max_steps)
+                           approver=approver, max_steps=max_steps)
         TASKS[task_id]["status"] = "done"
         TASKS[task_id]["result"] = result
     except Exception as e:  # noqa: BLE001 — hata task kaydina yazilir, servisi dusurmez
@@ -75,6 +78,7 @@ def create_task(req: TaskRequest, background: BackgroundTasks):
     TASKS[task_id] = {
         "id": task_id, "status": "running", "workspace": workspace,
         "session_id": session.session_id, "result": None, "error": None,
+        "pending_approval": None,
     }
     background.add_task(_run_task, task_id, req.task, session, workspace, req.max_steps)
     return {"task_id": task_id, "session_id": session.session_id,
@@ -98,12 +102,14 @@ def stream_task(task_id: str):
     def event_gen():
         pos = 0
         waited = 0
+        sent_approval = None   # ayni approval_id icin BIR KEZ approval_needed yolla
         # transcript dosyasi henuz yoksa kisa bekle-yeniden-dene (~15s tavan).
-        while not os.path.exists(path) and rec["status"] == "running" and waited < 50:
+        while not os.path.exists(path) and rec["status"] not in ("done", "failed") and waited < 50:
             time.sleep(0.3)
             waited += 1
         while True:
-            running = rec["status"] == "running"   # okumadan ONCE yakala
+            # waiting_approval da "bitmemis" sayilir; sadece done/failed kapatir.
+            finished = rec["status"] in ("done", "failed")
             if os.path.exists(path):
                 with open(path, encoding="utf-8") as f:
                     f.seek(pos)
@@ -112,10 +118,46 @@ def stream_task(task_id: str):
                 for line in chunk.splitlines():
                     if line.strip():
                         yield f"data: {line}\n\n"
-            if not running:                         # done/failed -> son satirlari attik, kapat
+            # Onay bekleniyorsa UI'ya BIR KEZ sinyal (tekrar etme).
+            pend = rec.get("pending_approval")
+            if rec["status"] == "waiting_approval" and pend and pend["approval_id"] != sent_approval:
+                sent_approval = pend["approval_id"]
+                yield f"event: approval_needed\ndata: {json.dumps(pend, ensure_ascii=False)}\n\n"
+            if finished:                            # son satirlari attik, kapat
                 end = {"status": rec["status"], "result": rec["result"], "error": rec["error"]}
                 yield f"event: end\ndata: {json.dumps(end, ensure_ascii=False)}\n\n"
                 break
             time.sleep(0.3)
 
     return StreamingResponse(event_gen(), media_type="text/event-stream")
+
+
+# --------------------------------------------------------------------------- #
+# Onay endpoint'leri (v0.5.1-a)
+# --------------------------------------------------------------------------- #
+class DecisionBody(BaseModel):
+    approved: bool
+    reason: Optional[str] = ""
+
+
+@app.get("/approvals")
+def approvals():
+    return {"pending": list_pending()}
+
+
+@app.get("/approvals/{approval_id}")
+def approval(approval_id: str):
+    p = get_pending(approval_id)
+    if p is None:
+        raise HTTPException(status_code=404, detail="approval bulunamadi")
+    return p
+
+
+@app.post("/approvals/{approval_id}/decision")
+def decide(approval_id: str, body: DecisionBody):
+    status = resolve_approval(approval_id, body.approved, body.reason or "")
+    if status == "not_found":
+        raise HTTPException(status_code=404, detail="approval bulunamadi")
+    if status == "already":
+        raise HTTPException(status_code=409, detail="karar zaten verilmis")
+    return {"status": "ok", "approval_id": approval_id, "approved": body.approved}

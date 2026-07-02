@@ -23,7 +23,7 @@ import os
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Optional, Protocol, runtime_checkable
+from typing import Optional, Protocol, Union, runtime_checkable
 
 # Public yüzey. Pakete bölününce safety/__init__.py bunu birebir re-export eder,
 # böylece `from ...safety import X` çağrıları hiç değişmez.
@@ -77,9 +77,26 @@ class EditProposal:
 
 
 @dataclass
+class CommandProposal:
+    """Bir kabuk komutu calistirilmadan once onay icin (EditProposal'in kardesi).
+
+    Ortak taban yerine 'kind' discriminator: approver'lar kind=='command' gorunce
+    komut dalina gider, aksi halde (write/replace) diff dalina."""
+    command: str
+    cwd: str
+    kind: str = "command"
+    summary: str = ""
+
+
+# Approver'lara giren proposal tipleri (kind ile ayrilir).
+Proposal = Union[EditProposal, CommandProposal]
+
+
+@dataclass
 class ApprovalResult:
     decision: Decision
     reason: str = ""
+    approver: str = ""     # karari kim verdi: "web" / "terminal" / "auto" (opsiyonel iz)
 
     @property
     def approved(self) -> bool:
@@ -107,7 +124,7 @@ class EditOutcome:
 # --------------------------------------------------------------------------- #
 @runtime_checkable
 class Approver(Protocol):
-    def request(self, proposal: EditProposal) -> ApprovalResult:
+    def request(self, proposal: Proposal) -> ApprovalResult:
         ...
 
 
@@ -127,7 +144,16 @@ class TerminalApprover:
     def _c(self, text: str, code: str) -> str:
         return f"{code}{text}{_RESET}" if self.color else text
 
-    def request(self, proposal: EditProposal) -> ApprovalResult:
+    def request(self, proposal: Proposal) -> ApprovalResult:
+        if getattr(proposal, "kind", "") == "command":
+            print()
+            print(f"┌─ Önerilen komut (cwd: {proposal.cwd})")
+            print(f"│  {proposal.command}")
+            print("└─ " + "─" * 50)
+            ans = input("   Bu komutu çalıştır? [y/N] ").strip().lower()
+            if ans in ("y", "yes", "e", "evet"):
+                return ApprovalResult.approve()
+            return ApprovalResult.deny("kullanıcı terminalde reddetti")
         print()
         print(f"┌─ Önerilen {proposal.kind}: {proposal.path}")
         if proposal.summary:
