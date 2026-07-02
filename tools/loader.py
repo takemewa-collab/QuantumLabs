@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import importlib
 
-TOOL_MODULES = ["tools.search", "tools.edit", "tools.shell"]
+TOOL_MODULES = ["tools.search", "tools.edit", "tools.shell", "tools.memory"]
 
 __all__ = ["TOOL_MODULES", "load_tools"]
 

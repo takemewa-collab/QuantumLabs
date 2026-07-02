@@ -1,7 +1,8 @@
 """registry.dispatch temel davranisi + import yan-etkisi guvencesi."""
 from tools import registry
 
-EXPECTED_TOOLS = {"read_file", "search_code", "write_file", "replace_text", "run_command"}
+EXPECTED_TOOLS = {"read_file", "search_code", "write_file", "replace_text",
+                  "run_command", "search_memory"}
 
 
 def test_unknown_tool(fake_ctx):
@@ -10,8 +11,8 @@ def test_unknown_tool(fake_ctx):
     assert "bilinmeyen" in obs.content.lower()
 
 
-def test_all_five_registered():
-    assert len(registry) == 5
+def test_all_tools_registered():
+    assert len(registry) == 6
     assert {t.name for t in registry.all()} == EXPECTED_TOOLS
 
 
