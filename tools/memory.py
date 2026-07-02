@@ -7,8 +7,6 @@ yan-etkisiz kalir (sentence_transformers/chromadb yuklenmez).
 """
 from __future__ import annotations
 
-import os
-
 from tools.registry import ToolParam, registry
 
 
@@ -30,38 +28,18 @@ def search_memory(args: dict, ctx) -> str:
     except (TypeError, ValueError):
         top_k = 3
 
-    # Ucuz on-kontrol: memory dizini yoksa chroma'yi hic yukleme (bos hafiza normal).
-    from runtime.memory_ingest import _MEMORY_SUBDIR
-    if not os.path.isdir(os.path.join(ctx.cwd, _MEMORY_SUBDIR)):
-        return "hafizada kayit yok (henuz transcript ingest edilmemis)."
-
-    try:
-        from runtime.memory_ingest import _get_collection, _get_embedder
-        collection = _get_collection(ctx.cwd)
-        if collection.count() == 0:
-            return "hafizada kayit yok (henuz transcript ingest edilmemis)."
-        query_emb = _get_embedder().encode([query]).tolist()
-        res = collection.query(
-            query_embeddings=query_emb,
-            n_results=top_k,
-            include=["documents", "metadatas", "distances"],
-        )
-    except Exception as e:  # kullanici-dostu; runner zaten sarar ama mesaj net olsun
-        return f"HATA: hafiza aramasi basarisiz: {e}"
-
-    docs = (res.get("documents") or [[]])[0]
-    metas = (res.get("metadatas") or [[]])[0]
-    dists = (res.get("distances") or [[]])[0]
-    if not docs:
-        return f"'{query}' icin hafizada eslesme bulunamadi."
+    # Sorgu mantigi tek yerde (runtime.memory_ingest.query_memory); formatlama burada.
+    # query_memory LAZY: memory dizini yoksa/bos ise chroma yuklenmeden [] doner.
+    from runtime.memory_ingest import query_memory
+    results = query_memory(ctx.cwd, query, top_k)
+    if not results:
+        return "hafizada kayit yok veya eslesme bulunamadi."
 
     lines = []
-    for doc, meta, dist in zip(docs, metas, dists):
-        score = round(1 - dist, 2)                       # cosine benzerlik ~ 1-distance
-        sid = meta.get("session_id") or "?"
+    for r in results:
+        sid = r["session_id"]
         sid_short = sid[-8:] if len(sid) > 8 else sid    # kisa oturum-id
-        step = meta.get("step", "?")
-        date = (meta.get("ts") or "")[:10]               # YYYY-MM-DD
-        snippet = doc.replace("\n", " ")[:200]
-        lines.append(f"[{score}] (oturum {sid_short}, adim {step}, {date}) {snippet}")
+        date = (r["ts"] or "")[:10]                       # YYYY-MM-DD
+        snippet = r["text"].replace("\n", " ")[:200]
+        lines.append(f"[{r['score']}] (oturum {sid_short}, adim {r['step']}, {date}) {snippet}")
     return "\n".join(lines)

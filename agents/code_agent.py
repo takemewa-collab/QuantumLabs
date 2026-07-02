@@ -16,6 +16,7 @@ if _REPO_ROOT not in sys.path:
 from agents.llm import ask_model, default_config, get_client  # noqa: F401 (get_client: lazy-guard testleri)
 from protocols.safety import SafeEditProtocol, TerminalApprover
 from runtime.memory_ingest import ingest_session
+from runtime.memory_inject import build_memory_context
 from runtime.session import Session
 from runtime.transcript import append_event
 from tools import load_tools, registry
@@ -120,7 +121,7 @@ def parse_action(text):
     return json.loads(text[start:end + 1])
 
 
-def run_agent(task, max_steps=12, approver=None, model_config=None):
+def run_agent(task, max_steps=12, approver=None, model_config=None, memory_injection=True):
     load_tools()  # registry'yi doldur (idempotent; importlib modulleri cache'ler)
     approver = approver or TerminalApprover()
     model_config = model_config or default_config()  # env'i cagri aninda oku
@@ -135,11 +136,24 @@ def run_agent(task, max_steps=12, approver=None, model_config=None):
         session=session,
         git_diff=lambda path: _auto_git_diff(path, WORKSPACE),
     )
+    # Otomatik context enjeksiyonu (task-start): ilgili gecmis kayitlar MODELE
+    # giden ilk mesaja eklenir. Best-effort — hata/deps-yok -> block None, agent
+    # etkilenmez. YANKI ONLEME: transcript'e ORIJINAL task yazilir; enjekte blok
+    # event'e ASLA girmez (yoksa sonraki ingest bloku embed eder -> hafiza yankisi).
+    user_content = f"Gorev: {task}"
+    if memory_injection:
+        try:
+            block = build_memory_context(WORKSPACE, task)
+        except Exception:  # noqa: BLE001 — enjeksiyon asla agent'i dusurmez
+            block = None
+        if block:
+            user_content = f"{block}\n\n{user_content}"
+
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": f"Gorev: {task}"},
+        {"role": "user", "content": user_content},
     ]
-    append_event(session, {"type": "user", "content": task})  # gorev basi (step 0)
+    append_event(session, {"type": "user", "content": task})  # gorev basi (step 0) — ORIJINAL task
     try:
         for step in range(1, max_steps + 1):
             session.step = step  # transcript step'i anlamli olsun

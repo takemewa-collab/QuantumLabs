@@ -166,6 +166,42 @@ def ingest_session(session_id: str, workspace: str) -> int:
         return 0
 
 
+def query_memory(workspace: str, query: str, top_k: int = 3) -> list:
+    """Anlamsal sorgu -> [{score, session_id, step, ts, text}] (score = 1 - cosine).
+
+    Ortak sorgu cekirdegi (search_memory tool'u + otomatik context enjeksiyonu
+    ayni yerden gecer). Koleksiyon yok/bos ya da hata -> [] (best-effort)."""
+    try:
+        if not os.path.isdir(os.path.join(workspace, _MEMORY_SUBDIR)):
+            return []
+        collection = _get_collection(workspace)
+        if collection.count() == 0:
+            return []
+        query_emb = _get_embedder().encode([query]).tolist()
+        res = collection.query(
+            query_embeddings=query_emb,
+            n_results=top_k,
+            include=["documents", "metadatas", "distances"],
+        )
+    except Exception as e:  # noqa: BLE001 — best-effort
+        print(f"[memory_ingest] query hatasi (yok sayildi): {e}", file=sys.stderr)
+        return []
+
+    docs = (res.get("documents") or [[]])[0]
+    metas = (res.get("metadatas") or [[]])[0]
+    dists = (res.get("distances") or [[]])[0]
+    results = []
+    for doc, meta, dist in zip(docs, metas, dists):
+        results.append({
+            "score": round(1 - dist, 2),
+            "session_id": meta.get("session_id") or "?",
+            "step": meta.get("step", "?"),
+            "ts": meta.get("ts") or "",
+            "text": doc,
+        })
+    return results
+
+
 def ingest_all(workspace: str) -> dict:
     """transcripts/ altindaki tum jsonl'ler icin ingest_session. {session_id: n}."""
     result = {}
