@@ -58,13 +58,13 @@ def test_block_char_cap(tmp_path):
 
 
 def _run_fake(monkeypatch, workspace, task, memory_injection):
-    """run_agent'i LLM'siz kosar: ask_model'i final dondurup messages'i yakalar."""
+    """run_agent'i LLM'siz kosar: ask_model'i final dondurup messages'i yakalar.
+
+    S1a: session/workspace artik PARAMETRE ile enjekte edilir (global yok)."""
     import agents.code_agent as ca
     from runtime.session import Session
 
     captured = {}
-    monkeypatch.setattr(ca, "WORKSPACE", workspace)
-    monkeypatch.setattr(ca, "session", Session(workspace))
 
     def fake_ask(messages, cfg):
         captured["messages"] = [dict(m) for m in messages]
@@ -72,8 +72,10 @@ def _run_fake(monkeypatch, workspace, task, memory_injection):
 
     monkeypatch.setattr(ca, "ask_model", fake_ask)
     monkeypatch.setattr(ca, "ingest_session", lambda sid, ws: 0)   # finally no-op
-    ca.run_agent(task, max_steps=2, memory_injection=memory_injection)
-    return ca.session, captured
+    sess = Session(workspace)
+    ca.run_agent(task, max_steps=2, memory_injection=memory_injection,
+                 session=sess, workspace=workspace)
+    return sess, captured
 
 
 def _transcript_user(workspace, session_id):

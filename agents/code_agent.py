@@ -14,7 +14,7 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 from agents.llm import ask_model, default_config, get_client  # noqa: F401 (get_client: lazy-guard testleri)
-from protocols.safety import SafeEditProtocol, TerminalApprover
+from protocols.safety import TerminalApprover
 from runtime.memory_ingest import ingest_session
 from runtime.memory_inject import build_memory_context
 from runtime.session import Session
@@ -27,13 +27,10 @@ from tools.prompt import render_tool_list
 # run_agent'a model_config vererek override edilebilir.
 
 
+# WORKSPACE: fallback calisma dizini (CLI ayni dizinde calisir). Her run_agent
+# cagrisi kendi Session'ini/workspace'ini alabilir; global tekil session YOK
+# (S1a: "tum cagrilar tek session'a yigilir" kusuru giderildi).
 WORKSPACE = os.path.abspath(os.getcwd())
-
-# Tum guvenlik mantigi (diff, onay, count kontrolu, path kilidi, dosya yazma)
-# burada yasiyor. Tool'lar sadece bu instance'a delege eder.
-# Session verince yazma islemleri checkpoint'lenir (snapshot + rollback altyapisi).
-session = Session(WORKSPACE)
-_protocol = SafeEditProtocol(approver=TerminalApprover(), root=WORKSPACE, session=session)
 
 BLOCKED_COMMANDS = [
     "rm -rf", "rm -fr", "sudo", "mkfs", "shutdown", "reboot",
@@ -121,20 +118,28 @@ def parse_action(text):
     return json.loads(text[start:end + 1])
 
 
-def run_agent(task, max_steps=12, approver=None, model_config=None, memory_injection=True):
+def run_agent(task, max_steps=12, approver=None, model_config=None,
+              memory_injection=True, session=None, workspace=None):
+    """Bir gorevi ReAct dongusuyle cozer.
+
+    Her cagri kendi Session'ini/workspace'ini alir (verilmezse yeni Session +
+    WORKSPACE fallback) -> cagrilar birbirinin transcript'ine/checkpoint'ine
+    karismaz. Donus: Optional[str] — final cevap; max-step'e ulasilirsa None."""
     load_tools()  # registry'yi doldur (idempotent; importlib modulleri cache'ler)
+    workspace = workspace or WORKSPACE          # global sabit fallback (CLI)
     approver = approver or TerminalApprover()
     model_config = model_config or default_config()  # env'i cagri aninda oku
-    # ctx artik handler yolunun tum calisma-zamani bagimliliklarini tasir:
+    session = session or Session(workspace)     # HER CAGRIDA YENI (verilmezse)
+    # ctx handler yolunun tum calisma-zamani bagimliliklarini tasir:
     #   cwd      -> path kilidi (_safe_path) + git diff koku
-    #   approver -> write/replace onayi (import-time global _protocol yerine)
+    #   approver -> write/replace onayi
     #   session  -> checkpoint (snapshot/rollback); yoksa duz yazma
     #   git_diff -> degisiklik sonrasi otomatik diff (cwd'ye bagli)
     ctx = SimpleNamespace(
-        cwd=WORKSPACE,
+        cwd=workspace,
         approver=approver,
         session=session,
-        git_diff=lambda path: _auto_git_diff(path, WORKSPACE),
+        git_diff=lambda path: _auto_git_diff(path, workspace),
     )
     # Otomatik context enjeksiyonu (task-start): ilgili gecmis kayitlar MODELE
     # giden ilk mesaja eklenir. Best-effort — hata/deps-yok -> block None, agent
@@ -143,7 +148,7 @@ def run_agent(task, max_steps=12, approver=None, model_config=None, memory_injec
     user_content = f"Gorev: {task}"
     if memory_injection:
         try:
-            block = build_memory_context(WORKSPACE, task)
+            block = build_memory_context(workspace, task)
         except Exception:  # noqa: BLE001 — enjeksiyon asla agent'i dusurmez
             block = None
         if block:
@@ -175,8 +180,9 @@ def run_agent(task, max_steps=12, approver=None, model_config=None, memory_injec
             print(f"  dusunce: {thought}")
             print(f"  arac: {tool}  args: {str(args)[:200]}")
             if tool == "final":
-                print(f"\n>>> SONUC:\n{args.get('answer', '(bos)')}")
-                return
+                answer = args.get("answer", "(bos)")
+                print(f"\n>>> SONUC:\n{answer}")
+                return answer   # finally (ingest) yine calisir, sonra doner
             # Registry dispatch: bilinmeyen tool + handler hatalari iceride
             # ToolObservation'a donusuyor; agent SADECE observation.content gorur.
             obs = registry.dispatch(tool, args, ctx)
@@ -192,6 +198,7 @@ def run_agent(task, max_steps=12, approver=None, model_config=None, memory_injec
         n = ingest_session(session.session_id, session.workspace)
         if n:
             print(f"  (hafiza guncellendi: {n} chunk)")
+    return None   # max-step'e ulasildi (final gelmedi)
 
 
 def main():
