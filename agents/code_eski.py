@@ -17,14 +17,15 @@ import os
 import re
 import subprocess
 import sys
+from dataclasses import replace
 from datetime import datetime
 from typing import Optional
 
-from openai import OpenAI
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
-BASE_URL = "http://localhost:11434/v1"
-API_KEY = "ollama"  # Ollama herhangi bir anahtarı kabul eder
-MODEL = "deepseek-coder:6.7b"
+from agents.llm import ask_model, default_config  # v0.3.2 A3.2: ortak LLM katmani
 
 # Bu dosyanın yanındaki workspace/ klasörü (agents/workspace).
 WORKSPACE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "workspace")
@@ -38,19 +39,17 @@ SYSTEM_PROMPT = (
 # ```python ... ``` bloğunu yakalayan desen (DOTALL ile çok satırlı eşleşme).
 CODE_BLOCK_RE = re.compile(r"```(?:python)?\s*\n(.*?)```", re.DOTALL)
 
-client = OpenAI(base_url=BASE_URL, api_key=API_KEY)
-
 
 def generate_code(prompt: str) -> str:
     """İsteği modele gönderir ve modelin ham yanıtını döndürür."""
-    response = client.chat.completions.create(
-        model=MODEL,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
-        ],
-    )
-    return response.choices[0].message.content
+    # Model AÇIKÇA deepseek-coder:6.7b (hardcode korunur); temperature=None ->
+    # istekte gönderilmez (eski davranis: server default).
+    cfg = replace(default_config(), model="deepseek-coder:6.7b", temperature=None)
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": prompt},
+    ]
+    return ask_model(messages, cfg)
 
 
 def extract_code(text: str) -> Optional[str]:
