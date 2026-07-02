@@ -15,6 +15,7 @@ if _REPO_ROOT not in sys.path:
 
 from agents.llm import ask_model, default_config, get_client  # noqa: F401 (get_client: lazy-guard testleri)
 from protocols.safety import SafeEditProtocol, TerminalApprover
+from runtime.memory_ingest import ingest_session
 from runtime.session import Session
 from runtime.transcript import append_event
 from tools import load_tools, registry
@@ -139,37 +140,44 @@ def run_agent(task, max_steps=12, approver=None, model_config=None):
         {"role": "user", "content": f"Gorev: {task}"},
     ]
     append_event(session, {"type": "user", "content": task})  # gorev basi (step 0)
-    for step in range(1, max_steps + 1):
-        session.step = step  # transcript step'i anlamli olsun
-        print(f"\n=== Adim {step} ===")
-        raw = ask_model(messages, model_config)
-        messages.append({"role": "assistant", "content": raw})
-        append_event(session, {"type": "assistant", "content": raw})
-        try:
-            action = parse_action(raw)
-        except (ValueError, json.JSONDecodeError) as e:
-            print(f"  (JSON ayristirilamadi: {e})")
-            messages.append({"role": "user", "content":
-                "Ciktin gecerli bir JSON degildi. Lutfen SADECE istenen "
-                "formatta tek bir JSON nesnesi dondur."})
-            continue
-        thought = action.get("thought", "")
-        tool = action.get("tool", "")
-        args = action.get("args", {})
-        print(f"  dusunce: {thought}")
-        print(f"  arac: {tool}  args: {str(args)[:200]}")
-        if tool == "final":
-            print(f"\n>>> SONUC:\n{args.get('answer', '(bos)')}")
-            return
-        # Registry dispatch: bilinmeyen tool + handler hatalari iceride
-        # ToolObservation'a donusuyor; agent SADECE observation.content gorur.
-        obs = registry.dispatch(tool, args, ctx)
-        result = obs.content
-        append_event(session, {"type": "observation", "tool": tool,
-                               "ok": obs.ok, "content": result})
-        print(f"  sonuc (ilk 300 krk): {str(result)[:300]}")
-        messages.append({"role": "user", "content": f"Aracin sonucu:\n{result}"})
-    print("\n>>> Maksimum adim sayisina ulasildi.")
+    try:
+        for step in range(1, max_steps + 1):
+            session.step = step  # transcript step'i anlamli olsun
+            print(f"\n=== Adim {step} ===")
+            raw = ask_model(messages, model_config)
+            messages.append({"role": "assistant", "content": raw})
+            append_event(session, {"type": "assistant", "content": raw})
+            try:
+                action = parse_action(raw)
+            except (ValueError, json.JSONDecodeError) as e:
+                print(f"  (JSON ayristirilamadi: {e})")
+                messages.append({"role": "user", "content":
+                    "Ciktin gecerli bir JSON degildi. Lutfen SADECE istenen "
+                    "formatta tek bir JSON nesnesi dondur."})
+                continue
+            thought = action.get("thought", "")
+            tool = action.get("tool", "")
+            args = action.get("args", {})
+            print(f"  dusunce: {thought}")
+            print(f"  arac: {tool}  args: {str(args)[:200]}")
+            if tool == "final":
+                print(f"\n>>> SONUC:\n{args.get('answer', '(bos)')}")
+                return
+            # Registry dispatch: bilinmeyen tool + handler hatalari iceride
+            # ToolObservation'a donusuyor; agent SADECE observation.content gorur.
+            obs = registry.dispatch(tool, args, ctx)
+            result = obs.content
+            append_event(session, {"type": "observation", "tool": tool,
+                                   "ok": obs.ok, "content": result})
+            print(f"  sonuc (ilk 300 krk): {str(result)[:300]}")
+            messages.append({"role": "user", "content": f"Aracin sonucu:\n{result}"})
+        print("\n>>> Maksimum adim sayisina ulasildi.")
+    finally:
+        # Tur bitince (final/max-step/hata) hafizayi guncelle. Best-effort:
+        # ingest_session kendi icinde hatayi yutar; deps yoksa 0 doner, agent dusmez.
+        n = ingest_session(session.session_id, session.workspace)
+        if n:
+            print(f"  (hafiza guncellendi: {n} chunk)")
 
 
 def main():

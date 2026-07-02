@@ -4,7 +4,11 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.9"
-dependencies = []
+dependencies = [
+    # v0.4.0 B3a — transcript -> embed -> vektor index (lazy import edilir)
+    "chromadb==1.5.9",
+    "sentence-transformers==5.1.2",
+]
 
 [tool.uv.workspace]
 members = [
