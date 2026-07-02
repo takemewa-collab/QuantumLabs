@@ -6,33 +6,22 @@ import os
 import shlex
 import subprocess
 import sys
-from functools import lru_cache
 from types import SimpleNamespace
-
-from openai import OpenAI
 
 # code_agent.py agents/ altinda; protocols/ repo kokunde. Repo kokunu sys.path'e ekle.
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
+from agents.llm import ask_model, default_config, get_client  # noqa: F401 (get_client: lazy-guard testleri)
 from protocols.safety import SafeEditProtocol, TerminalApprover
 from runtime.session import Session
 from tools import load_tools, registry
 from tools.prompt import render_tool_list
 
-BASE_URL = "http://localhost:11434/v1"
-API_KEY = "ollama"
-MODEL = "deepseek-coder-v2:16b"
-
-@lru_cache(maxsize=1)
-def get_client():
-    """OpenAI/Ollama client'ini ILK cagrida kurar (lazy singleton).
-
-    Import-time'da kurmak, agents.code_agent'i import eden herkes (orn. pytest
-    test collection) icin gereksiz bir yan-etki olurdu. lru_cache tek instance
-    garantiler; davranis import-time kurulumla ayni, sadece ertelenmis."""
-    return OpenAI(base_url=BASE_URL, api_key=API_KEY)
+# Model/endpoint konfigurasyonu + client + ask_model artik agents/llm.py'de
+# (ortak LLM katmani). code_agent varsayilan olarak DEFAULT_CONFIG kullanir;
+# run_agent'a model_config vererek override edilebilir.
 
 
 WORKSPACE = os.path.abspath(os.getcwd())
@@ -129,16 +118,10 @@ def parse_action(text):
     return json.loads(text[start:end + 1])
 
 
-def ask_model(messages):
-    resp = get_client().chat.completions.create(
-        model=MODEL, messages=messages, temperature=0.2,
-    )
-    return resp.choices[0].message.content
-
-
-def run_agent(task, max_steps=12, approver=None):
+def run_agent(task, max_steps=12, approver=None, model_config=None):
     load_tools()  # registry'yi doldur (idempotent; importlib modulleri cache'ler)
     approver = approver or TerminalApprover()
+    model_config = model_config or default_config()  # env'i cagri aninda oku
     # ctx artik handler yolunun tum calisma-zamani bagimliliklarini tasir:
     #   cwd      -> path kilidi (_safe_path) + git diff koku
     #   approver -> write/replace onayi (import-time global _protocol yerine)
@@ -156,7 +139,7 @@ def run_agent(task, max_steps=12, approver=None):
     ]
     for step in range(1, max_steps + 1):
         print(f"\n=== Adim {step} ===")
-        raw = ask_model(messages)
+        raw = ask_model(messages, model_config)
         messages.append({"role": "assistant", "content": raw})
         try:
             action = parse_action(raw)
@@ -188,7 +171,7 @@ def main():
     parser.add_argument("--task", help="Agent'a verilecek gorev.")
     parser.add_argument("--max-steps", type=int, default=12)
     args = parser.parse_args()
-    print(f"Model: {MODEL} | Calisma dizini: {WORKSPACE}")
+    print(f"Model: {default_config().model} | Calisma dizini: {WORKSPACE}")
     task = args.task or input("Gorev nedir? ").strip()
     if not task:
         print("Gorev bos, cikiliyor.")
