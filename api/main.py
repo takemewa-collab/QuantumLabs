@@ -22,6 +22,7 @@ import uuid
 from typing import Optional
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -42,6 +43,15 @@ DEFAULT_WORKSPACE = os.path.abspath(os.getcwd())
 TASKS: dict = {}
 
 app = FastAPI(title="QuantumLabs API")
+
+# Web frontend (Next.js, localhost:3000) tarayicidan cagirabilsin diye CORS.
+# localhost-only + auth yok (S1b kapsam); prod'da origin listesi daraltilir.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 class TaskRequest(BaseModel):
