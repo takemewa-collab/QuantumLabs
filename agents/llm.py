@@ -23,7 +23,7 @@ class ModelConfig:
     base_url: str
     api_key: str
     model: str
-    temperature: float = 0.2
+    temperature: Optional[float] = 0.2   # None -> istekte hic gonderilmez (server default)
 
 
 def default_config() -> ModelConfig:
@@ -48,7 +48,8 @@ def get_client(cfg: ModelConfig) -> OpenAI:
 
 def ask_model(messages, cfg: Optional[ModelConfig] = None) -> str:
     cfg = cfg or default_config()
-    resp = get_client(cfg).chat.completions.create(
-        model=cfg.model, messages=messages, temperature=cfg.temperature,
-    )
+    kwargs = dict(model=cfg.model, messages=messages)
+    if cfg.temperature is not None:      # None ise gonderme -> server default korunur
+        kwargs["temperature"] = cfg.temperature
+    resp = get_client(cfg).chat.completions.create(**kwargs)
     return resp.choices[0].message.content

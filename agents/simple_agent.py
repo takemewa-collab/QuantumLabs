@@ -2,29 +2,31 @@
 
 OpenAI uyumlu API kullanır (base_url=http://localhost:11434/v1).
 Bir soru alır, modele gönderir ve cevabı yazdırır.
+
+v0.3.2 A3.1: LLM erisimi ortak agents.llm katmanina tasindi. Model AÇIKÇA
+qwen3:8b (bugunku hardcode korunur); temperature=None -> istekte gonderilmez
+(eski davranis: server default).
 """
 
+import os
 import sys
+from dataclasses import replace
 
-from openai import OpenAI
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
-BASE_URL = "http://localhost:11434/v1"
-API_KEY = "ollama"  # Ollama herhangi bir anahtarı kabul eder
-MODEL = "qwen3:8b"
-
-client = OpenAI(base_url=BASE_URL, api_key=API_KEY)
+from agents.llm import ask_model, default_config
 
 
 def ask(question: str) -> str:
     """Soruyu modele gönderir ve cevabı döndürür."""
-    response = client.chat.completions.create(
-        model=MODEL,
-        messages=[
-            {"role": "system", "content": "Sen yardımcı bir asistansın."},
-            {"role": "user", "content": question},
-        ],
-    )
-    return response.choices[0].message.content
+    cfg = replace(default_config(), model="qwen3:8b", temperature=None)
+    messages = [
+        {"role": "system", "content": "Sen yardımcı bir asistansın."},
+        {"role": "user", "content": question},
+    ]
+    return ask_model(messages, cfg)
 
 
 def main() -> None:
