@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import time
 import uuid
@@ -93,6 +94,70 @@ def create_task(req: TaskRequest, background: BackgroundTasks):
     background.add_task(_run_task, task_id, req.task, session, workspace, req.max_steps)
     return {"task_id": task_id, "session_id": session.session_id,
             "transcript_path": _transcript_path(workspace, session.session_id)}
+
+
+# --------------------------------------------------------------------------- #
+# Session listesi (v0.5.3-pre) — sidebar 405 fix.
+#
+# Kaynak: DEFAULT_WORKSPACE/.quantumlabs/transcripts/*.jsonl (v0.4.0 persistence).
+# Her jsonl = bir oturum. id = dosya adi (session_id). Ayni handler HEM /sessions
+# HEM /tasks'ta: frontend (v0.5.1-b route uyumu) GET /tasks cagiriyor; /sessions
+# de gorevde istenen isim. Oturum yoksa 404 DEGIL, bos liste.
+# --------------------------------------------------------------------------- #
+def _created_from_sid(session_id: str) -> str:
+    """session_id 'YYYY-MM-DD_HHMMSS[_...]' -> iso8601. Cozulemezse "" doner."""
+    m = re.match(r"(\d{4})-(\d{2})-(\d{2})_(\d{2})(\d{2})(\d{2})", session_id)
+    if not m:
+        return ""
+    y, mo, d, h, mi, s = m.groups()
+    return f"{y}-{mo}-{d}T{h}:{mi}:{s}"
+
+
+def _session_meta(path: str, session_id: str):
+    """(created_at, title): ilk event ts'i + ilk user mesajinin ilk ~60 karakteri."""
+    created_at = None
+    title = None
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    ev = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if created_at is None and ev.get("ts"):
+                    created_at = ev["ts"]
+                if title is None and ev.get("type") == "user":
+                    content = (ev.get("content") or "").strip()
+                    if content:
+                        title = content[:60]
+                if created_at and title:
+                    break
+    except OSError:
+        pass
+    return (created_at or _created_from_sid(session_id)), (title or "Untitled session")
+
+
+def _list_sessions() -> list:
+    tdir = os.path.join(DEFAULT_WORKSPACE, _TRANSCRIPT_SUBDIR)
+    if not os.path.isdir(tdir):
+        return []
+    sessions = []
+    for name in sorted(os.listdir(tdir), reverse=True):   # en yeni ustte (isim=zaman damgasi)
+        if not name.endswith(".jsonl"):
+            continue
+        session_id = name[: -len(".jsonl")]
+        created_at, title = _session_meta(os.path.join(tdir, name), session_id)
+        sessions.append({"id": session_id, "created_at": created_at, "title": title})
+    return sessions
+
+
+@app.get("/sessions")
+@app.get("/tasks")
+def list_sessions():
+    return _list_sessions()
 
 
 @app.get("/tasks/{task_id}")
