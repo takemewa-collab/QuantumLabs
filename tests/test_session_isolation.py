@@ -82,8 +82,15 @@ def test_final_answer_returned(tmp_path, monkeypatch):
 
 
 def test_max_steps_returns_none(tmp_path, monkeypatch):
-    # hep gecersiz JSON -> final gelmez -> max-step -> None
-    monkeypatch.setattr(ca, "ask_model", lambda m, c: "gecersiz cikti")
+    # v0.5.2: duz metin artik FINAL sayiliyor; max-step'e ulasmak icin FARKLI
+    # (final olmayan) valid action'lar uret (tekrar guard'i tetiklenmesin).
+    n = {"i": 0}
+
+    def fake(_m, _c):
+        n["i"] += 1
+        return json.dumps({"tool": "search_code", "args": {"query": f"benzersiz_q{n['i']}"}})
+
+    monkeypatch.setattr(ca, "ask_model", fake)
     monkeypatch.setattr(ca, "ingest_session", lambda sid, w: 0)
     ret = ca.run_agent("gorev", max_steps=2, session=Session(str(tmp_path)),
                        workspace=str(tmp_path), memory_injection=False)

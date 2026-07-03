@@ -102,11 +102,15 @@ ZORUNLU KURALLAR:
 2. JSON formati: {{"thought": "...", "tool": "arac_adi", "args": {{...}}}}
 3. Degisiklikten sonra gelen otomatik diff'i incele; yanlissa duzelt.
 4. Test gerekiyorsa run_command ile calistir; ciktiyi GECTI/KALDI diye degerlendir.
-5. Gorev bitince tool olarak "final" kullan, cevabini "answer"a yaz.
-6. Yollar calisma dizinine gore goreceli olmali (orn: "agents/main.py").
+5. Bir aracin sonucu sorunun cevabini iceriyorsa DUZ METIN YAZMA; DERHAL "final"
+   araci ile bitir ve cevabi "answer"a koy (cevabi thought icine yazma).
+6. Ayni araci ayni argumanlarla TEKRAR cagirma; sonuc degismiyorsa "final" ver.
+7. Bir islem REDDEDILDI ise aynisini TEKRAR DENEME; farkli yaklas ya da "final" ver.
+8. Yollar calisma dizinine gore goreceli olmali (orn: "agents/main.py").
 
-Ornek:
+Ornekler:
 {{"thought": "Once ilgili kodu bulmaliyim", "tool": "search_code", "args": {{"query": "def main"}}}}
+{{"thought": "Dosyayi okudum, cevap elimde", "tool": "final", "args": {{"answer": "README ilk satiri: # Quantum Labs"}}}}
 """
 
 
@@ -116,6 +120,14 @@ def parse_action(text):
     if start == -1 or end == -1:
         raise ValueError("Modelin ciktisinda JSON bulunamadi.")
     return json.loads(text[start:end + 1])
+
+
+def _is_rejection(content):
+    """Bir observation'in onay reddi olup olmadigini kabaca anlar.
+
+    edit reddi: 'REDDEDILDI: ...'  |  run_command reddi: 'Kullanici ... reddetti (...)'."""
+    low = str(content).strip().lower()
+    return low.startswith("redded") or "reddet" in low
 
 
 def run_agent(task, max_steps=12, approver=None, model_config=None,
@@ -159,6 +171,10 @@ def run_agent(task, max_steps=12, approver=None, model_config=None,
         {"role": "user", "content": user_content},
     ]
     append_event(session, {"type": "user", "content": task})  # gorev basi (step 0) — ORIJINAL task
+    # (d) Ardisik-tekrar guard durumu: son (tool,args) + son observation.
+    prev_key = None
+    prev_result = None
+    repeat = 1
     try:
         for step in range(1, max_steps + 1):
             session.step = step  # transcript step'i anlamli olsun
@@ -168,12 +184,12 @@ def run_agent(task, max_steps=12, approver=None, model_config=None,
             append_event(session, {"type": "assistant", "content": raw})
             try:
                 action = parse_action(raw)
-            except (ValueError, json.JSONDecodeError) as e:
-                print(f"  (JSON ayristirilamadi: {e})")
-                messages.append({"role": "user", "content":
-                    "Ciktin gecerli bir JSON degildi. Lutfen SADECE istenen "
-                    "formatta tek bir JSON nesnesi dondur."})
-                continue
+            except (ValueError, json.JSONDecodeError):
+                # (a) Duz-metin toleransi: JSON action yoksa modelin ciktisini FINAL
+                # kabul et (sessizce yeni tur ACMA). "final atlama" dongusunu keser.
+                answer = raw.strip()
+                print(f"\n>>> SONUC (duz metin, final olarak kabul edildi):\n{answer}")
+                return answer
             thought = action.get("thought", "")
             tool = action.get("tool", "")
             args = action.get("args", {})
@@ -190,7 +206,26 @@ def run_agent(task, max_steps=12, approver=None, model_config=None,
             append_event(session, {"type": "observation", "tool": tool,
                                    "ok": obs.ok, "content": result})
             print(f"  sonuc (ilk 300 krk): {str(result)[:300]}")
-            messages.append({"role": "user", "content": f"Aracin sonucu:\n{result}"})
+
+            # (d) Ayni (tool,args) VE ayni observation 3 kez ustuste -> dongu kilitli:
+            # kir ve son observation'i ozetleyen bir final dondur.
+            key = (tool, json.dumps(args, sort_keys=True, default=str))
+            repeat = repeat + 1 if (key == prev_key and result == prev_result) else 1
+            prev_key, prev_result = key, result
+            if repeat >= 3:
+                summary = (f"[dongu durduruldu] '{tool}' araci ayni argumanlarla 3 kez "
+                           f"ardisik AYNI sonucu verdi. Son sonuc:\n{result}")
+                print(f"\n>>> SONUC (tekrar guard):\n{summary}")
+                return summary
+
+            # (b) Rejection vurgusu: reddedilen action'i modele ACIK uyariyla besle.
+            if _is_rejection(result):
+                feedback = (f"Aracin sonucu:\n{result}\n\n"
+                            "UYARI: Bu islem REDDEDILDI. Ayni action'i TEKRAR DENEME; "
+                            "farkli bir yaklasim sec ya da 'final' araciyla durumu acikla.")
+            else:
+                feedback = f"Aracin sonucu:\n{result}"
+            messages.append({"role": "user", "content": feedback})
         print("\n>>> Maksimum adim sayisina ulasildi.")
     finally:
         # Tur bitince (final/max-step/hata) hafizayi guncelle. Best-effort:
