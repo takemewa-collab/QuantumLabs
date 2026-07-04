@@ -140,8 +140,11 @@ def run_agent(task, max_steps=12, approver=None, model_config=None,
     load_tools()  # registry'yi doldur (idempotent; importlib modulleri cache'ler)
     workspace = workspace or WORKSPACE          # global sabit fallback (CLI)
     approver = approver or TerminalApprover()
-    model_config = model_config or default_config()  # env'i cagri aninda oku
     session = session or Session(workspace)     # HER CAGRIDA YENI (verilmezse)
+    # Model secim sirasi: acik param > Session.model_config > env default.
+    model_config = (model_config
+                    or getattr(session, "model_config", None)
+                    or default_config())
     # ctx handler yolunun tum calisma-zamani bagimliliklarini tasir:
     #   cwd      -> path kilidi (_safe_path) + git diff koku
     #   approver -> write/replace onayi
