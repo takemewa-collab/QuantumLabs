@@ -36,10 +36,15 @@ export default function Home() {
         <Textarea
           value={task}
           onChange={(e) => setTask(e.target.value)}
-          placeholder="Ne yapmasını istersin? (⌘/Ctrl + Enter ile gönder)"
+          placeholder="Ne yapmasını istersin? (Enter ile gönder, Shift+Enter yeni satır)"
           rows={4}
           onKeyDown={(e) => {
-            if ((e.metaKey || e.ctrlKey) && e.key === "Enter") onSubmit();
+            // Enter -> gönder; Shift+Enter -> yeni satir (default).
+            // isComposing: IME/olu-tus ( or Turkce klavye) birlestirirken Enter'i yutma.
+            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+              e.preventDefault();
+              onSubmit();
+            }
           }}
           className="min-h-[120px] resize-none rounded-[16px] border-border bg-background px-4 py-3 text-base shadow-sm focus-visible:ring-0"
         />
