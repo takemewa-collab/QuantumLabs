@@ -5,7 +5,9 @@
 //   GET  /tasks              -> SessionSummary[]  (== GET /sessions alias)
 //   GET  /tasks/{id}         -> task kaydi
 //   GET  /tasks/{id}/stream  -> SSE (text/event-stream)
-// [id] = task_id. listSessions hata/yok durumunda [] doner (bos sidebar).
+// URL'lerdeki {id} = session_id (kalici, tek kimlik). Backend geriye-uyum icin
+// hem task_id hem session_id kabul eder; frontend YALNIZ session_id yayar.
+// listSessions hata/yok durumunda [] doner (bos sidebar).
 
 const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";

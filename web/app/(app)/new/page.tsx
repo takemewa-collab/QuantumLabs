@@ -33,7 +33,8 @@ export default function NewTask() {
     try {
       const res = await createTask(trimmed);
       // Persistent composer: box stays open, clears, refocuses; no navigation.
-      setStartedId(res.task_id);
+      // Use session_id (durable) — the only id in URLs; survives restarts.
+      setStartedId(res.session_id);
       setTask("");
       ref.current?.focus();
     } catch (e) {
