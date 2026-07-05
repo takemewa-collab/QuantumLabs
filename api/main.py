@@ -3,9 +3,11 @@
 3 endpoint, localhost, auth YOK, tek worker. Onay akisi YOK -> guvenlik default
 DENY (DenyAllApprover). Her istek kendi Session'ini alir (S1a izolasyonu).
 
-TASK KAYDI IN-MEMORY (TASKS dict): surec yeniden baslayinca kaybolur. Kalicilik
-S5 isi. Tek-worker varsayimi (uvicorn --workers 1) — coklu worker'da dict
-paylasilmaz.
+TASK KAYDI IN-MEMORY (TASKS dict): surec yeniden baslayinca kaybolur. Ama
+transcript'ler diskte kalici; S5'te surec-oncesi/tamamlanmis session'lar
+diskten SALT-OKUNUR replay ile acilir (stream_task -> _replay_gen). Durable
+"index" = transcript dizini; baslangicta bellege tam yukleme YOK.
+Tek-worker varsayimi (uvicorn --workers 1) — coklu worker'da dict paylasilmaz.
 
 Onay akisi (v0.5.1-a): default approver artik WebApprover. Yazma/komut onay
 gerektirdiginde task "waiting_approval"a gecer, SSE'de `approval_needed` sinyali
@@ -167,44 +169,78 @@ def get_task(task_id: str):
     return TASKS[task_id]
 
 
-@app.get("/tasks/{task_id}/stream")
-def stream_task(task_id: str):
-    if task_id not in TASKS:
-        raise HTTPException(status_code=404, detail="task bulunamadi")
-    rec = TASKS[task_id]
-    path = _transcript_path(rec["workspace"], rec["session_id"])
+def _live_gen(rec: dict, path: str):
+    """CANLI session: transcript'i tail eder, approval sinyali + end yollar."""
+    pos = 0
+    waited = 0
+    sent_approval = None   # ayni approval_id icin BIR KEZ approval_needed yolla
+    # transcript dosyasi henuz yoksa kisa bekle-yeniden-dene (~15s tavan).
+    while not os.path.exists(path) and rec["status"] not in ("done", "failed") and waited < 50:
+        time.sleep(0.3)
+        waited += 1
+    while True:
+        # waiting_approval da "bitmemis" sayilir; sadece done/failed kapatir.
+        finished = rec["status"] in ("done", "failed")
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as f:
+                f.seek(pos)
+                chunk = f.read()
+                pos = f.tell()
+            for line in chunk.splitlines():
+                if line.strip():
+                    yield f"data: {line}\n\n"
+        pend = rec.get("pending_approval")
+        if rec["status"] == "waiting_approval" and pend and pend["approval_id"] != sent_approval:
+            sent_approval = pend["approval_id"]
+            yield f"event: approval_needed\ndata: {json.dumps(pend, ensure_ascii=False)}\n\n"
+        if finished:                            # son satirlari attik, kapat
+            end = {"status": rec["status"], "result": rec["result"], "error": rec["error"]}
+            yield f"event: end\ndata: {json.dumps(end, ensure_ascii=False)}\n\n"
+            break
+        time.sleep(0.3)
 
-    def event_gen():
-        pos = 0
-        waited = 0
-        sent_approval = None   # ayni approval_id icin BIR KEZ approval_needed yolla
-        # transcript dosyasi henuz yoksa kisa bekle-yeniden-dene (~15s tavan).
-        while not os.path.exists(path) and rec["status"] not in ("done", "failed") and waited < 50:
-            time.sleep(0.3)
-            waited += 1
-        while True:
-            # waiting_approval da "bitmemis" sayilir; sadece done/failed kapatir.
-            finished = rec["status"] in ("done", "failed")
-            if os.path.exists(path):
-                with open(path, encoding="utf-8") as f:
-                    f.seek(pos)
-                    chunk = f.read()
-                    pos = f.tell()
-                for line in chunk.splitlines():
-                    if line.strip():
-                        yield f"data: {line}\n\n"
-            # Onay bekleniyorsa UI'ya BIR KEZ sinyal (tekrar etme).
-            pend = rec.get("pending_approval")
-            if rec["status"] == "waiting_approval" and pend and pend["approval_id"] != sent_approval:
-                sent_approval = pend["approval_id"]
-                yield f"event: approval_needed\ndata: {json.dumps(pend, ensure_ascii=False)}\n\n"
-            if finished:                            # son satirlari attik, kapat
-                end = {"status": rec["status"], "result": rec["result"], "error": rec["error"]}
-                yield f"event: end\ndata: {json.dumps(end, ensure_ascii=False)}\n\n"
-                break
-            time.sleep(0.3)
 
-    return StreamingResponse(event_gen(), media_type="text/event-stream")
+def _replay_gen(path: str):
+    """S5: surec-oncesi / tamamlanmis session -> DISKTEN salt-okunur replay.
+
+    Satir satir okur (tum sessionlar bellege YUKLENMEZ), bozuk/yarim jsonl
+    satirlarini atlar, sonra event:end yollar. RESUME/tail YOK — tamamlanmis
+    session tekrar canli akmaz; sadece transcript'i gosterir."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    json.loads(line)          # gecerli JSON mi?
+                except json.JSONDecodeError:
+                    continue                  # bozuk/yarim satir -> atla
+                yield f"data: {line}\n\n"
+    except OSError:
+        pass
+    end = {"status": "done", "result": None, "error": None, "replayed": True}
+    yield f"event: end\ndata: {json.dumps(end, ensure_ascii=False)}\n\n"
+
+
+@app.get("/tasks/{ident}/stream")
+def stream_task(ident: str):
+    # ident = CANLI task_id (kisa) VEYA session_id (transcript dosya adi, kalici).
+    rec = TASKS.get(ident)
+    if rec is None:
+        # live bir session'in session_id'siyle mi cagrildi?
+        rec = next((r for r in TASKS.values() if r.get("session_id") == ident), None)
+
+    if rec is not None:                        # CANLI -> tail
+        path = _transcript_path(rec["workspace"], rec["session_id"])
+        return StreamingResponse(_live_gen(rec, path), media_type="text/event-stream")
+
+    # GECMIS (surec-oncesi / tamamlanmis): diskten salt-okunur replay.
+    hist_path = _transcript_path(DEFAULT_WORKSPACE, ident)
+    if os.path.exists(hist_path):
+        return StreamingResponse(_replay_gen(hist_path), media_type="text/event-stream")
+
+    raise HTTPException(status_code=404, detail="session bulunamadi")
 
 
 # --------------------------------------------------------------------------- #
