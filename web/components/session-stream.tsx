@@ -83,11 +83,11 @@ export function SessionStream({ id }: { id: string }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex items-center gap-2 py-4">
-        <h1 className="text-sm font-medium text-foreground">Oturum</h1>
+        <h1 className="text-sm font-medium text-foreground">Session</h1>
         <code className="font-mono text-xs text-muted-foreground">{id}</code>
         {conn === "reconnecting" && (
           <span className="rounded-full bg-surface px-2.5 py-0.5 text-xs text-muted-foreground">
-            yeniden bağlanıyor…
+            reconnecting…
           </span>
         )}
       </div>
@@ -95,7 +95,7 @@ export function SessionStream({ id }: { id: string }) {
       <ScrollArea className="flex-1">
         <div className="space-y-5 pb-16 pr-2">
           {events.length === 0 && (
-            <p className="text-sm text-muted-foreground">Olaylar bekleniyor…</p>
+            <p className="text-sm text-muted-foreground">Waiting for events…</p>
           )}
           {events.map((ev, i) => (
             <EventRow key={i} ev={ev} />
@@ -114,7 +114,7 @@ function EventRow({ ev }: { ev: StreamEvent }) {
   if (kind === "user") {
     return (
       <div className="space-y-1">
-        <div className="text-xs text-muted-foreground">görev</div>
+        <div className="text-xs text-muted-foreground">task</div>
         <Paragraph text={content} />
       </div>
     );
@@ -149,7 +149,8 @@ function EventRow({ ev }: { ev: StreamEvent }) {
     const result = parsed?.result as string | undefined;
     return (
       <div className="py-3 text-center text-xs text-muted-foreground">
-        {result ? `tamamlandı — ${result}` : "tamamlandı"}
+        <span className="text-brand">✓</span>{" "}
+        {result ? `done — ${result}` : "done"}
       </div>
     );
   }
@@ -207,13 +208,13 @@ function ApprovalBox({ parsed }: { parsed: Record<string, unknown> | null }) {
   const path = payload.path as string | undefined;
   const summary =
     (payload.summary as string | undefined) ??
-    (isCommand ? "komut onayı" : "yazma onayı");
+    (isCommand ? "command approval" : "write approval");
 
   return (
     <div className="rounded-[16px] border border-border p-4">
       <div className="mb-3 flex items-center justify-between gap-2">
         <span className="text-sm text-foreground">{summary}</span>
-        <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs text-amber-600">
+        <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs text-amber-500">
           <span aria-hidden>●</span> pending
         </span>
       </div>

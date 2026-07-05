@@ -1,16 +1,18 @@
 "use client";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRef, useState } from "react";
+import Link from "next/link";
+import { ArrowRight } from "lucide-react";
 import { createTask } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 
-export default function Home() {
-  const router = useRouter();
+export default function NewTask() {
   const [task, setTask] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [startedId, setStartedId] = useState<string | null>(null);
+  const ref = useRef<HTMLTextAreaElement>(null);
 
   async function onSubmit() {
     const trimmed = task.trim();
@@ -19,43 +21,58 @@ export default function Home() {
     setError(null);
     try {
       const res = await createTask(trimmed);
-      router.push(`/sessions/${res.task_id}`);
+      // Persistent composer: input acik + focused kalir, navigate ETME.
+      // Baslatilan oturuma link gosterilir (sidebar da guncellenir).
+      setStartedId(res.task_id);
+      setTask("");
+      ref.current?.focus();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "submit failed");
+      setError(e instanceof Error ? e.message : "Failed to start task");
+    } finally {
       setSubmitting(false);
     }
   }
 
   return (
     <div className="flex w-full flex-1 flex-col items-center justify-center gap-8">
-      <h1 className="text-2xl font-medium tracking-tight text-foreground">
-        Agent&apos;a bir görev ver
-      </h1>
+      <h1 className="text-2xl font-medium tracking-tight">Start a task</h1>
 
       <div className="w-full">
         <Textarea
+          ref={ref}
           value={task}
           onChange={(e) => setTask(e.target.value)}
-          placeholder="Ne yapmasını istersin? (Enter ile gönder, Shift+Enter yeni satır)"
+          placeholder="What should the agent do?  (Enter to send · Shift+Enter for a newline)"
           rows={4}
+          autoFocus
           onKeyDown={(e) => {
-            // Enter -> gönder; Shift+Enter -> yeni satir (default).
-            // isComposing: IME/olu-tus ( or Turkce klavye) birlestirirken Enter'i yutma.
+            // Enter -> send; Shift+Enter -> newline (default).
+            // isComposing: don't swallow Enter mid-IME/dead-key composition.
             if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault();
               onSubmit();
             }
           }}
-          className="min-h-[120px] resize-none rounded-[16px] border-border bg-background px-4 py-3 text-base shadow-sm focus-visible:ring-0"
+          className="min-h-[120px] resize-none rounded-[16px] border-border bg-surface px-4 py-3 text-base shadow-sm focus-visible:ring-1 focus-visible:ring-ring"
         />
-        {error && <p className="mt-2 text-sm text-red-600">{error}</p>}
-        <div className="mt-4 flex justify-end">
+        {error && <p className="mt-2 text-sm text-destructive">{error}</p>}
+        <div className="mt-4 flex items-center justify-between gap-3">
+          <div className="min-h-5 text-sm">
+            {startedId && (
+              <Link
+                href={`/sessions/${startedId}`}
+                className="inline-flex items-center gap-1 text-brand hover:underline"
+              >
+                Task started · open session <ArrowRight className="size-3.5" />
+              </Link>
+            )}
+          </div>
           <Button
             onClick={onSubmit}
             disabled={submitting || !task.trim()}
             className="rounded-full px-6"
           >
-            {submitting ? "Gönderiliyor…" : "Gönder"}
+            {submitting ? "Starting…" : "Start"}
           </Button>
         </div>
       </div>

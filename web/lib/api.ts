@@ -2,10 +2,10 @@
 //
 // NOT (route uyumu): backend (FastAPI) endpoint'leri /tasks altinda:
 //   POST /tasks              -> { task_id, session_id, transcript_path }
+//   GET  /tasks              -> SessionSummary[]  (== GET /sessions alias)
 //   GET  /tasks/{id}         -> task kaydi
 //   GET  /tasks/{id}/stream  -> SSE (text/event-stream)
-// Gorevdeki /sessions* rotalari bunlara ADAPTE edildi; [id] = task_id.
-// Backend'de LISTE endpoint'i (GET /tasks) HENUZ YOK -> listTasks bos/hata'da [] doner.
+// [id] = task_id. listSessions hata/yok durumunda [] doner (bos sidebar).
 
 const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
@@ -23,6 +23,13 @@ export interface TaskRecord {
   workspace?: string;
   result?: string | null;
   error?: string | null;
+}
+
+// GET /tasks (list) donusu — GET /tasks/{id}'den FARKLI sema.
+export interface SessionSummary {
+  id: string;
+  created_at: string;
+  title: string;
 }
 
 export async function createTask(task: string): Promise<CreateTaskResponse> {
@@ -47,14 +54,14 @@ export async function getTask(id: string): Promise<TaskRecord | null> {
   }
 }
 
-export async function listTasks(): Promise<TaskRecord[]> {
-  // Backend list endpoint'i yoksa (404/405/hata) -> [] (skeleton: bos sidebar).
+export async function listSessions(): Promise<SessionSummary[]> {
+  // Backend hata/yok -> [] (bos sidebar). GET /tasks == GET /sessions (alias).
   try {
     const res = await fetch(`${API_BASE}/tasks`, { cache: "no-store" });
     if (!res.ok) return [];
     const data = await res.json();
-    if (Array.isArray(data)) return data as TaskRecord[];
-    if (Array.isArray(data?.tasks)) return data.tasks as TaskRecord[];
+    if (Array.isArray(data)) return data as SessionSummary[];
+    if (Array.isArray(data?.tasks)) return data.tasks as SessionSummary[];
     return [];
   } catch {
     return [];
