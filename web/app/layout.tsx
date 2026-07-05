@@ -1,12 +1,6 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
-import {
-  SidebarProvider,
-  SidebarInset,
-  SidebarTrigger,
-} from "@/components/ui/sidebar";
-import { AppSidebar } from "@/components/app-sidebar";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -19,33 +13,22 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "QuantumLabs",
-  description: "Agent console",
+  title: "QuantumLabs — self-hosted AI agents",
+  description:
+    "Self-hosted tool-calling AI agents. Your model, your GPU. Safe edits, RAG memory, streaming API, human-in-the-loop approvals.",
 };
 
+// Root layout: yalniz html/body/font/dark. Sidebar kabuğu (app) grubuna tasindi;
+// boylece landing (/) tam-genislik, app rotalari sidebar'li olur.
 export default function RootLayout({
   children,
-}: Readonly<{
-  children: React.ReactNode;
-}>) {
+}: Readonly<{ children: React.ReactNode }>) {
   return (
     <html
       lang="en"
       className={`dark ${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <body className="min-h-full">
-        <SidebarProvider>
-          <AppSidebar />
-          <SidebarInset className="h-svh overflow-hidden bg-background">
-            <header className="flex h-12 shrink-0 items-center px-3">
-              <SidebarTrigger className="text-muted-foreground" />
-            </header>
-            <div className="mx-auto flex w-full max-w-[720px] flex-1 flex-col overflow-hidden px-6">
-              {children}
-            </div>
-          </SidebarInset>
-        </SidebarProvider>
-      </body>
+      <body className="min-h-full bg-background text-foreground">{children}</body>
     </html>
   );
 }
