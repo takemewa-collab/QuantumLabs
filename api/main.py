@@ -47,11 +47,21 @@ TASKS: dict = {}
 
 app = FastAPI(title="QuantumLabs API")
 
-# Web frontend (Next.js, localhost:3000) tarayicidan cagirabilsin diye CORS.
-# localhost-only + auth yok (S1b kapsam); prod'da origin listesi daraltilir.
+
+def _allowed_origins() -> list:
+    """CORS origin listesi ALLOWED_ORIGINS env'inden (virgul-ayrik).
+
+    Dev default: http://localhost:3000. Prod ornek:
+        ALLOWED_ORIGINS="https://q-labs.dev,https://www.q-labs.dev"
+    """
+    raw = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000")
+    return [o.strip() for o in raw.split(",") if o.strip()]
+
+
+# CORS: izin verilen origin'ler env'den (baslangicta okunur).
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=_allowed_origins(),
     allow_methods=["*"],
     allow_headers=["*"],
 )
