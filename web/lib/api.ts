@@ -9,8 +9,12 @@
 // hem task_id hem session_id kabul eder; frontend YALNIZ session_id yayar.
 // listSessions hata/yok durumunda [] doner (bos sidebar).
 
+// API base: NEXT_PUBLIC_API_URL varsa onu, yoksa (geriye uyum) eski
+// NEXT_PUBLIC_API_BASE_URL, o da yoksa dev default localhost:8000.
 const API_BASE =
-  process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
+  process.env.NEXT_PUBLIC_API_URL ??
+  process.env.NEXT_PUBLIC_API_BASE_URL ??
+  "http://localhost:8000";
 
 // Opsiyonel API anahtari: set ise tum fetch'lere Authorization: Bearer eklenir.
 // EventSource custom header gonderemedigi icin SSE'de ?key= query param kullanilir.
