@@ -1,0 +1,17 @@
+[Unit]
+Description=QuantumLabs API (uvicorn)
+After=network.target
+
+[Service]
+Type=simple
+User=quantumlabs
+Group=quantumlabs
+WorkingDirectory=/opt/quantumlabs
+EnvironmentFile=/etc/quantumlabs/env
+# Single worker: task/approval state is in-memory (sessions persist to disk).
+ExecStart=/opt/quantumlabs/.venv/bin/uvicorn api.main:app --host 127.0.0.1 --port 8000 --workers 1
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,6 @@
+api.q-labs.dev {
+	reverse_proxy 127.0.0.1:8000 {
+		# SSE-safe: disable response buffering so stream events flush immediately.
+		flush_interval -1
+	}
+}
