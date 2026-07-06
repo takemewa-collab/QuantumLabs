@@ -22,6 +22,7 @@ import re
 import sys
 import time
 import uuid
+from dataclasses import replace
 from typing import Optional
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
@@ -34,9 +35,30 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 from agents.code_agent import run_agent
+from agents.llm import quantum_pod_config
 from api.approvers import WebApprover, get_pending, list_pending, resolve_approval
 from runtime.session import Session
 from runtime.transcript import _TRANSCRIPT_SUBDIR  # yol deseni icin tek kaynak
+
+
+def _load_dotenv(path: str) -> None:
+    """Minimal .env yukleyici (dep yok): KEY=VALUE satirlarini os.environ'a koyar.
+    Zaten set olan degiskeni EZMEZ; # yorumlarini ve bos satirlari atlar."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, val = line.split("=", 1)
+                key = key.strip()
+                if key and key not in os.environ:
+                    os.environ[key] = val.strip().strip('"').strip("'")
+    except OSError:
+        pass  # .env yoksa sessizce gec — env dogrudan process'ten okunur
+
+
+_load_dotenv(os.path.join(_REPO_ROOT, ".env"))
 
 APPROVAL_TIMEOUT_SEC = 300   # web onayi bu surede gelmezse -> DENY (asili task yok)
 
@@ -116,7 +138,13 @@ def _run_task(task_id: str, task: str, session, workspace: str, max_steps: int) 
 def create_task(req: TaskRequest, background: BackgroundTasks):
     task_id = uuid.uuid4().hex[:8]
     workspace = req.workspace or DEFAULT_WORKSPACE
-    session = Session(workspace)
+    # Tek dallanma: QUANTUM_POD_BASE_URL set ise Session'i uzak OpenAI-uyumlu
+    # pod'a (model="quantum") yonlendir; set degilse lokal davranis birebir korunur.
+    if os.getenv("QUANTUM_POD_BASE_URL"):
+        session = Session(workspace,
+                          model_config=replace(quantum_pod_config(), model="quantum"))
+    else:
+        session = Session(workspace)
     # session_id zaman-damgasi saniye cozunurluklu; ayni saniyedeki iki gorev
     # CAKISMASIN diye benzersiz task_id ekle (transcript dosyasi da benzersiz olur).
     session.session_id = f"{session.session_id}_{task_id}"

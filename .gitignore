@@ -1,5 +1,8 @@
 .quantumlabs/
 
+# local env (secrets / pod URL) — .env.example is tracked
+.env
+
 # web frontend (v0.5.1-b)
 web/node_modules
 web/.next
