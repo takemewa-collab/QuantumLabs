@@ -24,7 +24,7 @@ import time
 import uuid
 from typing import Optional
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -45,7 +45,29 @@ DEFAULT_WORKSPACE = os.path.abspath(os.getcwd())
 # In-memory task kaydi (tek worker; kalicilik yok — S5).
 TASKS: dict = {}
 
-app = FastAPI(title="QuantumLabs API")
+
+def require_auth(
+    authorization: Optional[str] = Header(default=None),
+    key: Optional[str] = None,
+) -> None:
+    """Opsiyonel API anahtari. API_KEY env SET ise TUM route'larda (SSE dahil)
+    dogru token zorunlu; UNSET ise auth kapali (bugunku davranis, geriye uyum).
+
+    EventSource custom header gonderemedigi icin SSE'de Authorization: Bearer
+    YANINDA ?key=<token> query param'i da kabul edilir."""
+    expected = os.getenv("API_KEY")
+    if not expected:
+        return
+    supplied = None
+    if authorization and authorization.startswith("Bearer "):
+        supplied = authorization[len("Bearer "):].strip()
+    elif key:
+        supplied = key
+    if supplied != expected:
+        raise HTTPException(status_code=401, detail="unauthorized")
+
+
+app = FastAPI(title="QuantumLabs API", dependencies=[Depends(require_auth)])
 
 
 def _allowed_origins() -> list:

@@ -12,6 +12,16 @@
 const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 
+// Opsiyonel API anahtari: set ise tum fetch'lere Authorization: Bearer eklenir.
+// EventSource custom header gonderemedigi icin SSE'de ?key= query param kullanilir.
+const API_KEY = process.env.NEXT_PUBLIC_API_KEY;
+
+function authHeaders(
+  base: Record<string, string> = {}
+): Record<string, string> {
+  return API_KEY ? { ...base, Authorization: `Bearer ${API_KEY}` } : base;
+}
+
 export interface CreateTaskResponse {
   task_id: string;
   session_id: string;
@@ -37,7 +47,7 @@ export interface SessionSummary {
 export async function createTask(task: string): Promise<CreateTaskResponse> {
   const res = await fetch(`${API_BASE}/tasks`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: authHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ task }),
   });
   if (!res.ok) {
@@ -48,7 +58,10 @@ export async function createTask(task: string): Promise<CreateTaskResponse> {
 
 export async function getTask(id: string): Promise<TaskRecord | null> {
   try {
-    const res = await fetch(`${API_BASE}/tasks/${id}`, { cache: "no-store" });
+    const res = await fetch(`${API_BASE}/tasks/${id}`, {
+      cache: "no-store",
+      headers: authHeaders(),
+    });
     if (!res.ok) return null;
     return (await res.json()) as TaskRecord;
   } catch {
@@ -59,7 +72,10 @@ export async function getTask(id: string): Promise<TaskRecord | null> {
 export async function listSessions(): Promise<SessionSummary[]> {
   // Backend hata/yok -> [] (bos sidebar). GET /tasks == GET /sessions (alias).
   try {
-    const res = await fetch(`${API_BASE}/tasks`, { cache: "no-store" });
+    const res = await fetch(`${API_BASE}/tasks`, {
+      cache: "no-store",
+      headers: authHeaders(),
+    });
     if (!res.ok) return [];
     const data = await res.json();
     if (Array.isArray(data)) return data as SessionSummary[];
@@ -70,7 +86,8 @@ export async function listSessions(): Promise<SessionSummary[]> {
   }
 }
 
-// SSE endpoint URL'i (EventSource icin).
+// SSE endpoint URL'i (EventSource icin). API_KEY varsa ?key= ile (header YOK).
 export function eventsUrl(id: string): string {
-  return `${API_BASE}/tasks/${id}/stream`;
+  const url = `${API_BASE}/tasks/${id}/stream`;
+  return API_KEY ? `${url}?key=${encodeURIComponent(API_KEY)}` : url;
 }
