@@ -22,7 +22,6 @@ import re
 import sys
 import time
 import uuid
-from dataclasses import replace
 from typing import Optional
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
@@ -138,11 +137,12 @@ def _run_task(task_id: str, task: str, session, workspace: str, max_steps: int) 
 def create_task(req: TaskRequest, background: BackgroundTasks):
     task_id = uuid.uuid4().hex[:8]
     workspace = req.workspace or DEFAULT_WORKSPACE
-    # Tek dallanma: QUANTUM_POD_BASE_URL set ise Session'i uzak OpenAI-uyumlu
-    # pod'a (model="quantum") yonlendir; set degilse lokal davranis birebir korunur.
-    if os.getenv("QUANTUM_POD_BASE_URL"):
-        session = Session(workspace,
-                          model_config=replace(quantum_pod_config(), model="quantum"))
+    # Tek dallanma: QUANTUM_POD_BASE_URL VE QUANTUM_POD_API_KEY set ise Session'i
+    # uzak OpenAI-uyumlu pod'a yonlendir (model/api_key/base_url quantum_pod_config'ten,
+    # api_key OpenAI client'ta Bearer header olur). Ikisinden biri yoksa lokal davranis
+    # birebir korunur.
+    if os.getenv("QUANTUM_POD_BASE_URL") and os.getenv("QUANTUM_POD_API_KEY"):
+        session = Session(workspace, model_config=quantum_pod_config())
     else:
         session = Session(workspace)
     # session_id zaman-damgasi saniye cozunurluklu; ayni saniyedeki iki gorev
