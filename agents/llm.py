@@ -48,7 +48,7 @@ def quantum_pod_config() -> ModelConfig:
         # OpenAI client bu api_key'i otomatik "Authorization: Bearer <key>" yapar.
         api_key=os.getenv("QUANTUM_POD_API_KEY", "quantum"),
         # vLLM model id'leri case-sensitive; RunPod worker'i kucuk harfle sunuyor
-        # ("EFEACIL/..." 500 doner). Override icin QUANTUM_POD_MODEL kullan.
+        # (buyuk harfli id 500 doner). Override icin QUANTUM_POD_MODEL kullan.
         model=os.getenv("QUANTUM_POD_MODEL", "efeacil/qwen3-4b-quantum"),
     )
 
