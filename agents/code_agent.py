@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -17,6 +18,7 @@ from agents.llm import ask_model, default_config, get_client  # noqa: F401 (get_
 from protocols.safety import TerminalApprover
 from runtime.memory_ingest import ingest_session
 from runtime.memory_inject import build_memory_context
+from runtime.profile import build_user_profile
 from runtime.session import Session
 from runtime.transcript import append_event
 from tools import load_tools, registry
@@ -107,10 +109,19 @@ ZORUNLU KURALLAR:
 6. Ayni araci ayni argumanlarla TEKRAR cagirma; sonuc degismiyorsa "final" ver.
 7. Bir islem REDDEDILDI ise aynisini TEKRAR DENEME; farkli yaklas ya da "final" ver.
 8. Yollar calisma dizinine gore goreceli olmali (orn: "agents/main.py").
+9. DIL: 'final' cevabini KULLANICININ gorevi yazdigi DILDE ver. Kullanici Ingilizce
+   yazdiysa Ingilizce, Turkce yazdiysa Turkce, baska bir dilde yazdiysa o dilde
+   cevapla. Bir dile ONCEDEN ZORLAMA; kullanicinin dilini yanki gibi izle. (Bu
+   sistem talimatinin Turkce olmasi cevabin dilini BELIRLEMEZ.)
+10. SOHBET: Selamlasma, tesekkur ya da arac GEREKTIRMEYEN genel bir mesaj gelirse
+   arac cagirma; DOGRUDAN 'final' ile yanit ver. Sicak, kisa ve YARDIMSEVER ol:
+   selamla, sonra somut olarak nasil yardimci olabilecegini 2-3 ornekle sun (orn.
+   kod okuma/arama, dosya duzenleme, test calistirma). Robotik tek cumlelik cevap
+   verme; 'answer' alanina dogrudan kullaniciya HITAP eden metni yaz (dusunceyi degil).
 
-Ornekler:
+Ornekler (yalnizca FORMAT ornegidir; cevap DILI kullaniciya gore degisir):
 {{"thought": "Once ilgili kodu bulmaliyim", "tool": "search_code", "args": {{"query": "def main"}}}}
-{{"thought": "Dosyayi okudum, cevap elimde", "tool": "final", "args": {{"answer": "README ilk satiri: # Quantum Labs"}}}}
+{{"thought": "User asked in English -> answer in English", "tool": "final", "args": {{"answer": "The first line of the README is: # Quantum Labs"}}}}
 """
 
 
@@ -130,13 +141,26 @@ def _is_rejection(content):
     return low.startswith("redded") or "reddet" in low
 
 
+def _strip_think(text):
+    """Reasoning-model <think>…</think> bloklarini (kapali VE ac-kalmis) temizle.
+    Qwen3 gibi modeller cevabi dusunceyle sarar; dusunce ic izdir, cevap DEGIL."""
+    text = re.sub(r"<think>.*?</think>", "", str(text), flags=re.S)
+    text = re.sub(r"<think>.*$", "", text, flags=re.S)   # kapanmamis <think> -> sonuna kadar at
+    return text.strip()
+
+
 def run_agent(task, max_steps=12, approver=None, model_config=None,
-              memory_injection=True, session=None, workspace=None):
+              memory_injection=True, session=None, workspace=None, history=None,
+              profile_injection=True):
     """Bir gorevi ReAct dongusuyle cozer.
 
     Her cagri kendi Session'ini/workspace'ini alir (verilmezse yeni Session +
     WORKSPACE fallback) -> cagrilar birbirinin transcript'ine/checkpoint'ine
-    karismaz. Donus: Optional[str] — final cevap; max-step'e ulasilirsa None."""
+    karismaz. Donus: Optional[str] — final cevap; max-step'e ulasilirsa None.
+
+    history: onceki turlarin mesaj tape'i ([{role, content}, ...]). Verilirse
+    system ile yeni user mesaji ARASINA konur -> ayni session'da follow-up: agent
+    ne yaptigini hatirlar. None (default) -> tek-atis, birinci tur davranisi aynen."""
     load_tools()  # registry'yi doldur (idempotent; importlib modulleri cache'ler)
     workspace = workspace or WORKSPACE          # global sabit fallback (CLI)
     approver = approver or TerminalApprover()
@@ -169,10 +193,23 @@ def run_agent(task, max_steps=12, approver=None, model_config=None,
         if block:
             user_content = f"{block}\n\n{user_content}"
 
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": user_content},
-    ]
+    # Kullanici profili (kalici, kisiye-ozel): system mesajina eklenir (guvenilir).
+    # Memory blogu (karantinali, gorev-benzeri gecmis) user mesajina; profil ise
+    # DAIMA orada -> selamlasma/sohbet kisisellesir. Best-effort: yoksa None.
+    system_content = SYSTEM_PROMPT
+    if profile_injection:
+        try:
+            profile_block = build_user_profile(workspace)
+        except Exception:  # noqa: BLE001 — profil asla agent'i dusurmez
+            profile_block = None
+        if profile_block:
+            system_content = f"{SYSTEM_PROMPT}\n\n{profile_block}"
+
+    messages = [{"role": "system", "content": system_content}]
+    if history:
+        # Follow-up: onceki turlarin tape'i system'den SONRA, yeni user'dan ONCE.
+        messages.extend(history)
+    messages.append({"role": "user", "content": user_content})
     append_event(session, {"type": "user", "content": task})  # gorev basi (step 0) — ORIJINAL task
     # (d) Ardisik-tekrar guard durumu: son (tool,args) + son observation.
     prev_key = None
@@ -189,10 +226,21 @@ def run_agent(task, max_steps=12, approver=None, model_config=None,
                 action = parse_action(raw)
             except (ValueError, json.JSONDecodeError):
                 # (a) Duz-metin toleransi: JSON action yoksa modelin ciktisini FINAL
-                # kabul et (sessizce yeni tur ACMA). "final atlama" dongusunu keser.
-                answer = raw.strip()
-                print(f"\n>>> SONUC (duz metin, final olarak kabul edildi):\n{answer}")
-                return answer
+                # kabul et. AMA once <think> temizle: reasoning model bazen SADECE
+                # dusunce uretip cevabi/JSON'u unutuyor -> ham <think>'i "cevap"
+                # sanmak 0 puanli bos yanit demek. Dusunce disi gercek prose varsa
+                # onu final kabul et; HIC yoksa modeli 'final' vermeye DURT (donguye
+                # devam), sessizce bos cevap dondurme.
+                prose = _strip_think(raw)
+                if prose:
+                    print(f"\n>>> SONUC (duz metin, final olarak kabul edildi):\n{prose}")
+                    return prose
+                print("  [uyari] model sadece <think> uretti, cevap yok -> durtuluyor")
+                messages.append({"role": "user", "content": (
+                    "Sadece dusunce (<think>) urettin; kullaniciya CEVAP yok. Simdi "
+                    "son cevabini SADECE JSON 'final' action'i ile ver: "
+                    '{"thought":"...","tool":"final","args":{"answer":"<cevap>"}}')})
+                continue
             thought = action.get("thought", "")
             tool = action.get("tool", "")
             args = action.get("args", {})

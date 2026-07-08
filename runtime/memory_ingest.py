@@ -10,7 +10,9 @@ soguk-start'i sadece gercek ingest aninda odenir.
 
 Yol: <workspace>/.quantumlabs/memory/  (chroma PersistentClient)
 Koleksiyon: "transcript_turns" (cosine)
-ID: f"{session_id}:{step}"  -> deterministik; tekrar ingest duplicate yaratmaz.
+ID: f"{session_id}:{chunk_index}"  -> deterministik; tekrar ingest duplicate
+yaratmaz. (step DEGIL: follow-up'ta ayni session'da step 0 tekrar eder ->
+'sid:0' cakisirdi; chunk-index dosya sirasina gore benzersiz ve stabildir.)
 
 Best-effort: ingest hatasi (deps yok, disk vb.) agent'i ASLA dusurmez; stderr'e
 uyari + 0 doner (runtime/transcript.py deseniyle ayni).
@@ -141,7 +143,9 @@ def chunk_turns(jsonl_path: str) -> list:
 def ingest_session(session_id: str, workspace: str) -> int:
     """Bir oturumun transcript'ini chunk'la, embed et (batch), chroma'ya upsert.
 
-    Deterministik ID (session_id:step) -> tekrar ingest gunceller, duplicate yok.
+    Deterministik ID (session_id:chunk_index) -> tekrar ingest gunceller, duplicate
+    yok. chunk_index dosya sirasina gore; transcript yalniz APPEND edildigi icin
+    stabil (follow-up'ta step tekrar etse de ID cakismaz).
     Donus: upsert edilen chunk sayisi. Dosya yoksa 0. Hata sizmaz (best-effort)."""
     try:
         jsonl = os.path.join(workspace, _TRANSCRIPT_SUBDIR, f"{session_id}.jsonl")
@@ -153,7 +157,9 @@ def ingest_session(session_id: str, workspace: str) -> int:
         # Embedding TEMIZ metinden (assistant JSON gurultusu haric); chroma
         # document ise ham tur metni (retrieval snippet'i tam kalsin).
         embeddings = _get_embedder().encode([t.embed_text for t in turns]).tolist()
-        ids = [f"{session_id}:{t.metadata['step']}" for t in turns]
+        # ID = session_id:chunk_index (step DEGIL): follow-up'ta step 0 tekrar eder,
+        # 'sid:0' cakisirdi. chunk_index dosya sirasina gore benzersiz + stabil.
+        ids = [f"{session_id}:{i}" for i, _ in enumerate(turns)]
         _get_collection(workspace).upsert(
             ids=ids,
             embeddings=embeddings,
