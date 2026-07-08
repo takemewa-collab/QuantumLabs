@@ -16,6 +16,7 @@ DENY (WebApprover). run_command ARTIK API'de kullanilabilir (inline input soktul
 """
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import re
@@ -159,6 +160,130 @@ def create_task(req: TaskRequest, background: BackgroundTasks):
 
 
 # --------------------------------------------------------------------------- #
+# Follow-up (v0.6.0): var olan session'a AYNI transcript'e devam mesaji.
+#
+# Backend tek-atis degil artik: POST /tasks/{session_id}/messages yeni bir task
+# KAYDI acar ama session_id'yi KORUR -> append_event ayni .jsonl'e yazar, stream
+# ayni dosyayi tail eder. run_agent'a transcript'ten yeniden kurulan `history`
+# gecilir; agent onceki turlari hatirlar. Cok-turlu chat bu sekilde.
+# --------------------------------------------------------------------------- #
+def _rebuild_history(path: str) -> list:
+    """Transcript jsonl'i run_agent'in bekledigi mesaj tape'ine cevirir.
+
+    user->'Gorev: ...', assistant->ham metin, observation->'Aracin sonucu: ...'
+    (run_agent'in ic formatiyla birebir). Bozuk satir atlanir. Dosya yoksa []."""
+    msgs: list = []
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    ev = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                typ = ev.get("type")
+                content = ev.get("content")
+                if content is None:
+                    continue
+                if typ == "user":
+                    msgs.append({"role": "user", "content": f"Gorev: {content}"})
+                elif typ == "assistant":
+                    msgs.append({"role": "assistant", "content": content})
+                elif typ == "observation":
+                    msgs.append({"role": "user", "content": f"Aracin sonucu:\n{content}"})
+    except OSError:
+        pass
+    return msgs
+
+
+class FollowupRequest(BaseModel):
+    task: str
+    workspace: Optional[str] = None
+    max_steps: int = 12
+
+
+@app.post("/tasks/{session_id}/messages")
+def followup(session_id: str, req: FollowupRequest, background: BackgroundTasks):
+    """Var olan session'a devam mesaji. session_id transcript'i yoksa 404."""
+    workspace = req.workspace or DEFAULT_WORKSPACE
+    path = _transcript_path(workspace, session_id)
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="session bulunamadi")
+
+    task_id = uuid.uuid4().hex[:8]
+    if os.getenv("QUANTUM_POD_BASE_URL") and os.getenv("QUANTUM_POD_API_KEY"):
+        session = Session(workspace, model_config=quantum_pod_config())
+    else:
+        session = Session(workspace)
+    # session_id'yi EZ: append_event ayni dosyaya yazsin (yeni tur ayni transcript).
+    session.session_id = session_id
+    history = _rebuild_history(path)
+    TASKS[task_id] = {
+        "id": task_id, "status": "running", "workspace": workspace,
+        "session_id": session_id, "result": None, "error": None,
+        "pending_approval": None,
+    }
+    background.add_task(_run_followup, task_id, req.task, session, workspace,
+                        req.max_steps, history)
+    return {"task_id": task_id, "session_id": session_id,
+            "transcript_path": path}
+
+
+def _run_followup(task_id, task, session, workspace, max_steps, history):
+    """_run_task ile ayni; sadece run_agent'a history gecer (onceki turlar)."""
+    try:
+        approver = WebApprover(task_id, TASKS, timeout_sec=APPROVAL_TIMEOUT_SEC)
+        result = run_agent(task, session=session, workspace=workspace,
+                           approver=approver, max_steps=max_steps, history=history)
+        TASKS[task_id]["status"] = "done"
+        TASKS[task_id]["result"] = result
+    except Exception as e:  # noqa: BLE001 — hata task kaydina yazilir
+        TASKS[task_id]["status"] = "failed"
+        TASKS[task_id]["error"] = str(e)
+
+
+# --------------------------------------------------------------------------- #
+# Geri bildirim (v0.6.0) — self-improvement cark'inin YAKIT sinyali.
+#
+# UI'da 👍/👎 -> POST /tasks/{session_id}/feedback. .quantumlabs/feedback.jsonl'e
+# append (append_event deseniyle ayni; kalici, dedup yok — son karar gecerli sayilir
+# okuyan tarafca). Ileride veri kuratorlugu (SFT/DPO) bu dosyayi kullanir.
+# --------------------------------------------------------------------------- #
+def _feedback_path(workspace: str) -> str:
+    return os.path.join(workspace, _TRANSCRIPT_SUBDIR, "..", "feedback.jsonl")
+
+
+class FeedbackRequest(BaseModel):
+    rating: str                      # "up" | "down"
+    note: Optional[str] = None
+    workspace: Optional[str] = None
+
+
+@app.post("/tasks/{session_id}/feedback")
+def submit_feedback(session_id: str, req: FeedbackRequest):
+    rating = (req.rating or "").strip().lower()
+    if rating not in ("up", "down"):
+        raise HTTPException(status_code=422, detail="rating 'up' ya da 'down' olmali")
+    workspace = req.workspace or DEFAULT_WORKSPACE
+    rec = {
+        "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "session_id": session_id,
+        "rating": rating,
+        "note": (req.note or "")[:2000],
+    }
+    path = os.path.normpath(_feedback_path(workspace))
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"feedback yazilamadi: {e}")
+    return {"status": "ok", "session_id": session_id, "rating": rating}
+
+
+# --------------------------------------------------------------------------- #
 # Session listesi (v0.5.3-pre) — sidebar 405 fix.
 #
 # Kaynak: DEFAULT_WORKSPACE/.quantumlabs/transcripts/*.jsonl (v0.4.0 persistence).
@@ -229,8 +354,12 @@ def get_task(task_id: str):
     return TASKS[task_id]
 
 
-def _live_gen(rec: dict, path: str):
-    """CANLI session: transcript'i tail eder, approval sinyali + end yollar."""
+def _live_gen(rec: dict, path: str, after_lines: int = 0):
+    """CANLI session: transcript'i tail eder, approval sinyali + end yollar.
+
+    after_lines: istemci ilk `after_lines` transcript satirini ZATEN gordu (ayni
+    EventSource'u follow-up'ta yeniden bagladi) -> onlari atla, sadece yeni
+    satirlari yolla. 0 (default) -> bastan tam replay + tail (yeni sayfa yuklemesi)."""
     pos = 0
     waited = 0
     sent_approval = None   # ayni approval_id icin BIR KEZ approval_needed yolla
@@ -238,7 +367,16 @@ def _live_gen(rec: dict, path: str):
     while not os.path.exists(path) and rec["status"] not in ("done", "failed") and waited < 50:
         time.sleep(0.3)
         waited += 1
+    # after_lines: ilk N satiri atla, pos'u onlarin sonuna kaydir (tekrar gonderme).
+    if after_lines and os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            for _ in range(after_lines):
+                if not f.readline():
+                    break
+            pos = f.tell()
+    idle_ticks = 0   # veri akmayan ardisik dongu sayisi (keepalive icin)
     while True:
+        yielded = False
         # waiting_approval da "bitmemis" sayilir; sadece done/failed kapatir.
         finished = rec["status"] in ("done", "failed")
         if os.path.exists(path):
@@ -249,25 +387,39 @@ def _live_gen(rec: dict, path: str):
             for line in chunk.splitlines():
                 if line.strip():
                     yield f"data: {line}\n\n"
+                    yielded = True
         pend = rec.get("pending_approval")
         if rec["status"] == "waiting_approval" and pend and pend["approval_id"] != sent_approval:
             sent_approval = pend["approval_id"]
             yield f"event: approval_needed\ndata: {json.dumps(pend, ensure_ascii=False)}\n\n"
+            yielded = True
         if finished:                            # son satirlari attik, kapat
             end = {"status": rec["status"], "result": rec["result"], "error": rec["error"]}
             yield f"event: end\ndata: {json.dumps(end, ensure_ascii=False)}\n\n"
             break
+        # KEEPALIVE: cold-start / approval bekleyisi gibi uzun sessizliklerde bagli
+        # kalsin. Bosta ~9s'de bir SSE yorumu (`:`) yolla -> tarayici/proxy idle
+        # baglantiyi DUSURMEZ, boylece stale after=0 ile auto-reconnect + replay
+        # (tekrar bug'i) hic tetiklenmez. Yorum satiri EventSource'ta yok sayilir.
+        idle_ticks = 0 if yielded else idle_ticks + 1
+        if idle_ticks >= 30:                     # ~30 * 0.3s = 9s
+            idle_ticks = 0
+            yield ": keepalive\n\n"
         time.sleep(0.3)
 
 
-def _replay_gen(path: str):
+def _replay_gen(path: str, after_lines: int = 0):
     """S5: surec-oncesi / tamamlanmis session -> DISKTEN salt-okunur replay.
 
     Satir satir okur (tum sessionlar bellege YUKLENMEZ), bozuk/yarim jsonl
     satirlarini atlar, sonra event:end yollar. RESUME/tail YOK — tamamlanmis
-    session tekrar canli akmaz; sadece transcript'i gosterir."""
+    session tekrar canli akmaz; sadece transcript'i gosterir.
+
+    after_lines: istemci ilk N transcript satirini zaten gordu (reconnect resume)
+    -> onlari atla. _live_gen ile ayni semantik: reconnect'te tekrar akmasin."""
     try:
         with open(path, encoding="utf-8") as f:
+            seen = 0
             for line in f:
                 line = line.strip()
                 if not line:
@@ -276,6 +428,9 @@ def _replay_gen(path: str):
                     json.loads(line)          # gecerli JSON mi?
                 except json.JSONDecodeError:
                     continue                  # bozuk/yarim satir -> atla
+                seen += 1
+                if seen <= after_lines:       # zaten gorulen satir -> atla (resume)
+                    continue
                 yield f"data: {line}\n\n"
     except OSError:
         pass
@@ -284,21 +439,29 @@ def _replay_gen(path: str):
 
 
 @app.get("/tasks/{ident}/stream")
-def stream_task(ident: str):
+def stream_task(ident: str, after: int = 0):
     # ident = CANLI task_id (kisa) VEYA session_id (transcript dosya adi, kalici).
+    # after: istemcinin zaten gordugu transcript satir sayisi (follow-up reconnect).
     rec = TASKS.get(ident)
     if rec is None:
-        # live bir session'in session_id'siyle mi cagrildi?
-        rec = next((r for r in TASKS.values() if r.get("session_id") == ident), None)
+        # live bir session'in session_id'siyle mi cagrildi? Ayni session_id'ye ait
+        # birden cok task olabilir (ilk tur + follow-up'lar) -> CALISAN olani (yoksa
+        # en yenisini) sec; yoksa yanlislikla eski 'done' rec'e baglanip aninda
+        # end yollariz.
+        matches = [r for r in TASKS.values() if r.get("session_id") == ident]
+        live = [r for r in matches if r["status"] not in ("done", "failed")]
+        rec = (live or matches)[-1] if matches else None
 
     if rec is not None:                        # CANLI -> tail
         path = _transcript_path(rec["workspace"], rec["session_id"])
-        return StreamingResponse(_live_gen(rec, path), media_type="text/event-stream")
+        return StreamingResponse(_live_gen(rec, path, after_lines=after),
+                                 media_type="text/event-stream")
 
-    # GECMIS (surec-oncesi / tamamlanmis): diskten salt-okunur replay.
+    # GECMIS (surec-oncesi / tamamlanmis): diskten salt-okunur replay (after resume).
     hist_path = _transcript_path(DEFAULT_WORKSPACE, ident)
     if os.path.exists(hist_path):
-        return StreamingResponse(_replay_gen(hist_path), media_type="text/event-stream")
+        return StreamingResponse(_replay_gen(hist_path, after_lines=after),
+                                 media_type="text/event-stream")
 
     raise HTTPException(status_code=404, detail="session bulunamadi")
 
