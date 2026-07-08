@@ -60,6 +60,46 @@ export async function createTask(task: string): Promise<CreateTaskResponse> {
   return res.json();
 }
 
+// Follow-up (v0.6.0): var olan session'a devam mesaji. Ayni session_id'ye yazar
+// -> stream ayni transcript'i tail eder. Donusteki task_id yeni tur; session_id AYNI.
+export async function sendFollowup(
+  sessionId: string,
+  task: string
+): Promise<CreateTaskResponse> {
+  const res = await fetch(
+    `${API_BASE}/tasks/${encodeURIComponent(sessionId)}/messages`,
+    {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ task }),
+    }
+  );
+  if (!res.ok) {
+    throw new Error(`sendFollowup failed: ${res.status}`);
+  }
+  return res.json();
+}
+
+// Geri bildirim (self-improvement yakiti): 👍/👎 -> feedback.jsonl. Best-effort;
+// hata UI'yi bozmasin (cagiran tarafta yakalanir).
+export async function sendFeedback(
+  sessionId: string,
+  rating: "up" | "down",
+  note?: string
+): Promise<void> {
+  const res = await fetch(
+    `${API_BASE}/tasks/${encodeURIComponent(sessionId)}/feedback`,
+    {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ rating, note }),
+    }
+  );
+  if (!res.ok) {
+    throw new Error(`sendFeedback failed: ${res.status}`);
+  }
+}
+
 export async function getTask(id: string): Promise<TaskRecord | null> {
   try {
     const res = await fetch(`${API_BASE}/tasks/${id}`, {
@@ -91,7 +131,13 @@ export async function listSessions(): Promise<SessionSummary[]> {
 }
 
 // SSE endpoint URL'i (EventSource icin). API_KEY varsa ?key= ile (header YOK).
-export function eventsUrl(id: string): string {
-  const url = `${API_BASE}/tasks/${id}/stream`;
-  return API_KEY ? `${url}?key=${encodeURIComponent(API_KEY)}` : url;
+// after: istemcinin zaten gordugu transcript satir sayisi. Follow-up'ta ayni
+// session'a yeniden baglanirken verilir -> backend o satirlari atlar, sadece
+// yeni turu yollar (bastan tekrar akmaz). 0/undefined -> tam replay + tail.
+export function eventsUrl(id: string, after = 0): string {
+  const params = new URLSearchParams();
+  if (after > 0) params.set("after", String(after));
+  if (API_KEY) params.set("key", API_KEY);
+  const qs = params.toString();
+  return `${API_BASE}/tasks/${encodeURIComponent(id)}/stream${qs ? `?${qs}` : ""}`;
 }
