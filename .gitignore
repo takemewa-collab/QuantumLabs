@@ -6,3 +6,9 @@
 # web frontend (v0.5.1-b)
 web/node_modules
 web/.next
+
+# eval kosu artefaktlari (raporlar yerel; trend icin istenirse commit edilir)
+eval/reports/
+
+# uretilen egitim verisi (transcript+feedback -> SFT)
+train/data/
