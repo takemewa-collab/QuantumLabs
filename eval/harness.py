@@ -6,8 +6,14 @@ eval/compare.py kullanilir (insan-onayli promotion gate'i).
 
 REPRODUKSIYON: eval izole bir session workspace'inde kosar (transcript/memory oraya
 gider, gercek repo'yu KIRLETMEZ); memory + profil enjeksiyonu KAPALI -> cekirdek
-yetenegi olcer, gecmis/profil gurultusu skoru sapt(ir)maz. cwd = repo (dosya
-araclari gercek repoda okur). Yalniz SALT-OKUNUR gorevler (repo'yu degistirmez).
+yetenegi olcer, gecmis/profil gurultusu skoru sapt(ir)maz.
+
+Gorev tipleri:
+  - salt-okunur (varsayilan): cwd = repo, dosya araclari GERCEK repoda okur; LLM judge.
+  - coklu-tur (turns[]): ayni session'da sirayla; history rebuild_history ile
+    transcript'ten kurulur (api follow-up ile TEK kaynak -> prod paritesi).
+  - edit (files/check): IZOLE fixture workspace (repo DEGIL) -> agent orada duzenler,
+    sonuc dosya-check ile DETERMINISTIK dogrulanir (judge gurultusu yok).
 
 Kullanim:
     python -m eval.harness --label baseline
@@ -33,7 +39,7 @@ from agents.code_agent import run_agent
 from agents.llm import default_config, quantum_pod_config
 from protocols.safety import AutoApprover
 from runtime.session import Session
-from runtime.transcript import _TRANSCRIPT_SUBDIR
+from runtime.transcript import _TRANSCRIPT_SUBDIR, rebuild_history
 from eval import judge as judge_mod
 
 _REPORTS_DIR = os.path.join(_REPO_ROOT, "eval", "reports")
@@ -102,37 +108,142 @@ def _transcript_metrics(workspace, session_id):
     return {"steps": steps, "tool_calls": tool_calls, "tool_errors": tool_errors}
 
 
+def _task_prompts(task):
+    """Gorevin prompt dizisi: coklu-tur (turns) ya da tek (prompt).
+    turns ogesi ya {"prompt": ...} sozlugu ya da duz string olabilir."""
+    turns = task.get("turns")
+    if turns:
+        return [t["prompt"] if isinstance(t, dict) else str(t) for t in turns]
+    return [task["prompt"]]
+
+
+def _display_prompt(task):
+    """Rapordaki okunur prompt: coklu-turda turlari '||' ile birlestir."""
+    prompts = _task_prompts(task)
+    return "  ||  ".join(prompts) if len(prompts) > 1 else prompts[0]
+
+
+def _judge_task(task, convo):
+    """Judge'a verilecek gorev sozlugu. Coklu-turda konusma baglamini prompt'a
+    goc ettir -> judge, FINAL cevabi ONCEKI turlarin isiginda degerlendirir
+    ('o dosya', 'onu' gibi geri-atiflari cozup cozmedigini gorur). Tek-turda
+    task'i oldugu gibi ver (mevcut davranis)."""
+    if len(convo) <= 1:
+        return task
+    lines = []
+    for i, (u, a) in enumerate(convo, 1):
+        lines.append(f"User turn {i}: {u}")
+        if i < len(convo):   # son turun cevabi ayrica ANSWER olarak gidiyor
+            lines.append(f"Agent turn {i}: {judge_mod._strip_think(str(a or ''))[:300]}")
+    convo_prompt = ("Multi-turn conversation; judge the agent's FINAL answer, which "
+                    "must correctly use context from EARLIER turns:\n" + "\n".join(lines))
+    return {"prompt": convo_prompt, "rubric": task.get("rubric", "")}
+
+
+def _write_fixture(work, files):
+    """Edit gorevleri icin baslangic dosyalarini izole workspace'e yaz.
+    files: {goreceli_yol: icerik}. Alt dizinler olusturulur."""
+    for rel, content in (files or {}).items():
+        p = os.path.join(work, rel)
+        os.makedirs(os.path.dirname(p) or work, exist_ok=True)
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(content)
+
+
+def _verify_checks(work, check):
+    """Edit gorevi puanlama: agent'in birakigi DOSYA DURUMUNU deterministik dogrula
+    (LLM judge YOK -> zayif-judge gurultusu edit'leri saptirmaz). check dict ya da
+    dict listesi; her biri {file, contains?[], not_contains?[], equals?}.
+    Donus judge formati: {score, passed, reason}."""
+    checks = check if isinstance(check, list) else [check]
+    fails = []
+    for c in checks:
+        rel = c.get("file", "")
+        p = os.path.join(work, rel)
+        if not os.path.isfile(p):
+            fails.append(f"{rel}: dosya yok")
+            continue
+        try:
+            with open(p, encoding="utf-8") as f:
+                text = f.read()
+        except OSError as e:  # noqa: BLE001
+            fails.append(f"{rel}: okunamadi ({e})")
+            continue
+        if "equals" in c and text.strip() != str(c["equals"]).strip():
+            fails.append(f"{rel}: icerik beklenenle eslesmiyor")
+        for sub in c.get("contains", []):
+            if sub not in text:
+                fails.append(f"{rel}: '{sub}' yok")
+        for sub in c.get("not_contains", []):
+            if sub in text:
+                fails.append(f"{rel}: '{sub}' HALA var")
+    if fails:
+        return {"score": 0.0, "passed": False, "reason": "; ".join(fails)[:200]}
+    return {"score": 1.0, "passed": True, "reason": "tum dosya-check'leri gecti"}
+
+
 def run_task(task, cfg):
-    """Tek gorevi izole koş, judge'la. Donus: sonuc sozlugu."""
-    tmp = tempfile.mkdtemp(prefix="ql-eval-")
+    """Bir gorevi izole koş ve puanla. Uc tur gorev tek yoldan akar:
+
+      - tek-tur salt-okunur (mevcut): workspace = repo, LLM judge cevabi puanlar.
+      - coklu-tur (turns[]): AYNI session'da sirayla; her turdan sonra history
+        transcript'ten kurulur (rebuild_history — PROD paritesi); judge final
+        cevabi konusma baglaminda degerlendirir.
+      - edit (files/check): izole fixture workspace'e baslangic dosyalari yazilir,
+        agent orada duzenler, sonuc DOSYA-check ile deterministik dogrulanir.
+
+    Donus: sonuc sozlugu."""
+    tmp = tempfile.mkdtemp(prefix="ql-eval-")        # transcript/session (ephemeral)
     session = Session(tmp, model_config=cfg)
+    is_edit = task.get("files") is not None or task.get("check") is not None
+    if is_edit:
+        work = tempfile.mkdtemp(prefix="ql-eval-work-")   # izole tool cwd (fixture)
+        _write_fixture(work, task.get("files"))
+    else:
+        work = _REPO_ROOT                            # salt-okunur: gercek repoda oku
+
+    prompts = _task_prompts(task)
     t0 = time.time()
     error = None
     answer = None
+    convo = []
+    history = None
     try:
-        answer = run_agent(
-            task["prompt"],
-            max_steps=task.get("max_steps", 6),
-            approver=AutoApprover(approve=True),
-            session=session,
-            workspace=_REPO_ROOT,          # cwd = repo (dosya araclari); transcript -> tmp
-            memory_injection=False,        # reprodüksiyon: gecmis enjekte etme
-            profile_injection=False,       # reprodüksiyon: profil enjekte etme
-        )
+        for tp in prompts:
+            answer = run_agent(
+                tp,
+                max_steps=task.get("max_steps", 6),
+                approver=AutoApprover(approve=True),
+                session=session,
+                workspace=work,                # edit -> fixture; okuma -> repo
+                memory_injection=False,        # reprodüksiyon: gecmis enjekte etme
+                profile_injection=False,       # reprodüksiyon: profil enjekte etme
+                history=history,               # ilk tur None; sonrakiler transcript'ten
+            )
+            convo.append((tp, answer))
+            if len(prompts) > 1:               # sonraki tur: history'yi AYNI transcript'ten kur
+                tpath = os.path.join(tmp, _TRANSCRIPT_SUBDIR, f"{session.session_id}.jsonl")
+                history = rebuild_history(tpath)
     except Exception as ex:  # noqa: BLE001 — bir gorev cokerse eval devam etsin
         error = f"{type(ex).__name__}: {ex}"
     latency = round(time.time() - t0, 1)
     metrics = _transcript_metrics(tmp, session.session_id)
-    verdict = judge_mod.score(task, answer)
-    # tmp temizle (transcript/memory ephemeral)
-    try:
-        import shutil
-        shutil.rmtree(tmp, ignore_errors=True)
-    except Exception:  # noqa: BLE001
-        pass
+
+    # Puanlama: edit -> deterministik dosya-check; digerleri -> LLM judge.
+    if task.get("check") is not None:
+        verdict = _verify_checks(work, task["check"])
+    else:
+        verdict = judge_mod.score(_judge_task(task, convo), answer)
+
+    # tmp/work temizle (transcript/memory + fixture ephemeral)
+    import shutil
+    shutil.rmtree(tmp, ignore_errors=True)
+    if is_edit:
+        shutil.rmtree(work, ignore_errors=True)
     return {
         "id": task["id"], "category": task.get("category", ""),
-        "prompt": task["prompt"],
+        "prompt": _display_prompt(task),
+        "turns": len(prompts),
         "answer": (answer or "")[:1000],
         "score": verdict["score"], "passed": verdict["passed"],
         "reason": verdict["reason"],

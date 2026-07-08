@@ -39,6 +39,7 @@ from agents.llm import quantum_pod_config
 from api.approvers import WebApprover, get_pending, list_pending, resolve_approval
 from runtime.session import Session
 from runtime.transcript import _TRANSCRIPT_SUBDIR  # yol deseni icin tek kaynak
+from runtime.transcript import rebuild_history      # follow-up history: eval ile TEK kaynak
 
 
 def _load_dotenv(path: str) -> None:
@@ -167,37 +168,8 @@ def create_task(req: TaskRequest, background: BackgroundTasks):
 # ayni dosyayi tail eder. run_agent'a transcript'ten yeniden kurulan `history`
 # gecilir; agent onceki turlari hatirlar. Cok-turlu chat bu sekilde.
 # --------------------------------------------------------------------------- #
-def _rebuild_history(path: str) -> list:
-    """Transcript jsonl'i run_agent'in bekledigi mesaj tape'ine cevirir.
-
-    user->'Gorev: ...', assistant->ham metin, observation->'Aracin sonucu: ...'
-    (run_agent'in ic formatiyla birebir). Bozuk satir atlanir. Dosya yoksa []."""
-    msgs: list = []
-    try:
-        with open(path, encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    ev = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                typ = ev.get("type")
-                content = ev.get("content")
-                if content is None:
-                    continue
-                if typ == "user":
-                    msgs.append({"role": "user", "content": f"Gorev: {content}"})
-                elif typ == "assistant":
-                    msgs.append({"role": "assistant", "content": content})
-                elif typ == "observation":
-                    msgs.append({"role": "user", "content": f"Aracin sonucu:\n{content}"})
-    except OSError:
-        pass
-    return msgs
-
-
+# history kurulumu runtime.transcript.rebuild_history'de (eval harness ile TEK kaynak):
+# eval, prod'un kullandigi AYNI history rekonstruksiyonunu test etsin diye ORTAK.
 class FollowupRequest(BaseModel):
     task: str
     workspace: Optional[str] = None
@@ -219,7 +191,7 @@ def followup(session_id: str, req: FollowupRequest, background: BackgroundTasks)
         session = Session(workspace)
     # session_id'yi EZ: append_event ayni dosyaya yazsin (yeni tur ayni transcript).
     session.session_id = session_id
-    history = _rebuild_history(path)
+    history = rebuild_history(path)
     TASKS[task_id] = {
         "id": task_id, "status": "running", "workspace": workspace,
         "session_id": session_id, "result": None, "error": None,

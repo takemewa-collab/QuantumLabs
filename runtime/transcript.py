@@ -51,3 +51,37 @@ def append_event(session, event: dict) -> None:
             f.write(json.dumps(enriched, ensure_ascii=False) + "\n")
     except Exception as e:  # noqa: BLE001 — best-effort; agent'i asla dusurme
         print(f"[transcript] yazma hatasi (yok sayildi): {e}", file=sys.stderr)
+
+
+def rebuild_history(path: str) -> list:
+    """Bir transcript jsonl'i run_agent'in bekledigi mesaj tape'ine cevirir.
+
+    user->'Gorev: ...', assistant->ham metin, observation->'Aracin sonucu: ...'
+    (run_agent'in ic mesaj formatiyla birebir). Bozuk satir atlanir; dosya yoksa [].
+
+    TEK KAYNAK: hem API follow-up (api/main.py) hem eval harness (eval/harness.py)
+    bunu kullanir -> eval, prod'un kullandigi AYNI history kurulumunu test eder."""
+    msgs: list = []
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    ev = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                typ = ev.get("type")
+                content = ev.get("content")
+                if content is None:
+                    continue
+                if typ == "user":
+                    msgs.append({"role": "user", "content": f"Gorev: {content}"})
+                elif typ == "assistant":
+                    msgs.append({"role": "assistant", "content": content})
+                elif typ == "observation":
+                    msgs.append({"role": "user", "content": f"Aracin sonucu:\n{content}"})
+    except OSError:
+        pass
+    return msgs
